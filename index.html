@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataAnalyzer Pro v2.0</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>📊 DataAnalyzer</h1>
+            <p>v2.0</p>
+        </div>
+
+        <!-- TEMAS -->
+        <div class="theme-section">
+            <p class="section-label">🎨 TEMA</p>
+            <div class="theme-buttons">
+                <button class="theme-btn active" onclick="changeTheme('dark')">🌙</button>
+                <button class="theme-btn" onclick="changeTheme('light')">☀️</button>
+                <button class="theme-btn" onclick="changeTheme('blue')">🌊</button>
+                <button class="theme-btn" onclick="changeTheme('green')">🌲</button>
+                <button class="theme-btn" onclick="changeTheme('purple')">💜</button>
+            </div>
+        </div>
+
+        <!-- ARQUIVO -->
+        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+            📂 Abrir Arquivo
+        </button>
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.json" style="display:none" onchange="handleFile(event)">
+
+        <!-- SELEÇÃO DE ABAS -->
+        <div id="sheetsSection" style="display:none;">
+            <p class="section-label">📋 PLANILHAS</p>
+            <div id="sheetsList" class="sheets-list"></div>
+            <button class="btn btn-primary" onclick="loadSelectedSheets()" style="margin-top: 10px;">✅ Carregar</button>
+        </div>
+
+        <!-- INFO -->
+        <div class="file-info" id="fileInfo">
+            Nenhum arquivo carregado
+        </div>
+
+        <!-- NAVEGAÇÃO -->
+        <nav class="nav">
+            <button class="nav-btn active" onclick="showPage('dashboard')">🏠 Dashboard</button>
+            <button class="nav-btn" onclick="showPage('analytics')">📊 Análises</button>
+            <button class="nav-btn" onclick="showPage('charts')">📈 Gráficos</button>
+            <button class="nav-btn" onclick="showPage('comparison')">🔄 Comparação</button>
+            <button class="nav-btn" onclick="showPage('statistics')">📉 Estatísticas</button>
+            <button class="nav-btn" onclick="showPage('export')">💾 Exportar</button>
+            <button class="nav-btn" onclick="showPage('settings')">⚙️ Configurações</button>
+        </nav>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main-content">
+        <!-- DASHBOARD -->
+        <div class="page active" id="dashboard">
+            <h2>📊 Dashboard</h2>
+            <div id="dashboardContent"></div>
+        </div>
+
+        <!-- ANALYTICS -->
+        <div class="page" id="analytics">
+            <h2>📊 Análises</h2>
+            <div id="analyticsContent"></div>
+        </div>
+
+        <!-- CHARTS -->
+        <div class="page" id="charts">
+            <h2>📈 Gráficos</h2>
+            <div class="controls">
+                <select id="chartType" onchange="generateChart()">
+                    <option value="line">Gráfico de Linha</option>
+                    <option value="bar">Gráfico de Barras</option>
+                    <option value="pie">Gráfico de Pizza</option>
+                </select>
+                <select id="chartColumn" multiple style="height: 100px;" onchange="generateChart()"></select>
+                <small style="color: var(--text3); margin-top: 5px;">Ctrl+Clique para múltiplas colunas</small>
+            </div>
+            <canvas id="myChart"></canvas>
+        </div>
+
+        <!-- COMPARISON -->
+        <div class="page" id="comparison">
+            <h2>🔄 Comparação</h2>
+            <div id="comparisonContent"></div>
+        </div>
+
+        <!-- STATISTICS -->
+        <div class="page" id="statistics">
+            <h2>📉 Estatísticas</h2>
+            <div id="statisticsContent"></div>
+        </div>
+
+        <!-- EXPORT -->
+        <div class="page" id="export">
+            <h2>💾 Exportar Dados</h2>
+            
+            <h3>📄 Formatos Simples</h3>
+            <div class="export-buttons">
+                <button class="btn btn-success" onclick="exportCSV()">📊 CSV</button>
+                <button class="btn btn-success" onclick="exportJSON()">📋 JSON</button>
+                <button class="btn btn-success" onclick="exportExcel()">📈 Excel</button>
+            </div>
+
+            <h3>📕 Gerar Relatório em PDF</h3>
+            <div class="pdf-options">
+                <label>
+                    <input type="checkbox" id="pdfDashboard" checked> Dashboard com estatísticas
+                </label>
+                <label>
+                    <input type="checkbox" id="pdfAnalytics" checked> Análises detalhadas
+                </label>
+                <label>
+                    <input type="checkbox" id="pdfGraphics" checked> Gráficos
+                </label>
+                <label>
+                    <input type="checkbox" id="pdfTable" checked> Tabela de dados
+                </label>
+                <label>
+                    <input type="checkbox" id="pdfComparison" checked> Comparação de colunas
+                </label>
+            </div>
+            <button class="btn btn-success" onclick="exportPDF()" style="width: 100%; margin-top: 15px;">
+                🔴 Gerar PDF Completo
+            </button>
+
+            <div id="exportPreview"></div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div class="page" id="settings">
+            <h2>⚙️ Configurações</h2>
+            <div class="settings-box">
+                <h3>🎨 Aparência</h3>
+                <p>Mude de tema clicando nos botões na sidebar!</p>
+            </div>
+            <div class="settings-box">
+                <h3>📊 Dados Carregados</h3>
+                <p id="settingsInfo">Nenhum arquivo carregado</p>
+            </div>
+            <div class="settings-box">
+                <h3>ℹ️ Sobre</h3>
+                <p><strong>DataAnalyzer Pro v2.0</strong></p>
+                <p>Análise avançada de dados com interface moderna</p>
+                <p>100% HTML, CSS e JavaScript com suporte a múltiplas abas e PDF</p>
+            </div>
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
