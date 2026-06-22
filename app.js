@@ -1,809 +1,1167 @@
-// Estado global
-let appData = {
+// DataAnalyzer Pro v3.0 — Complete Web Application
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+
+let state = {
     data: [],
     columns: [],
+    columnTypes: {},
+    numericColumns: [],
+    categoricalColumns: [],
     fileName: '',
-    currentTheme: localStorage.getItem('theme') || 'dark',
-    currentChart: null,
-    allSheets: {}, // Armazenar todas as abas
-    selectedSheets: [], // Abas selecionadas
-    sheetNames: [] // Nomes das abas
+    currentTable: {
+        filteredData: [],
+        page: 1,
+        rowsPerPage: 25
+    }
 };
 
-// Inicializar
-document.addEventListener('DOMContentLoaded', function() {
-    applyTheme(appData.currentTheme);
-    showEmptyState();
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
+
+document.addEventListener('DOMContentLoaded', () => {
+    initNavigation();
 });
 
-// ========== TEMAS ==========
-function changeTheme(theme) {
-    appData.currentTheme = theme;
-    localStorage.setItem('theme', theme);
-    applyTheme(theme);
-    updateThemeButtons(theme);
-    showNotification(`✨ Tema "${theme}" aplicado!`);
-}
-
-function applyTheme(theme) {
-    document.documentElement.setAttribute('data-theme', theme);
-}
-
-function updateThemeButtons(theme) {
-    document.querySelectorAll('.theme-btn').forEach(btn => {
-        btn.classList.remove('active');
+function initNavigation() {
+    document.querySelectorAll('.nav-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const page = btn.getAttribute('data-page');
+            navigateTo(page, btn);
+        });
     });
-    document.querySelector(`[onclick="changeTheme('${theme}')"]`).classList.add('active');
 }
 
-// ========== ARQUIVO ==========
-function handleFile(event) {
+function navigateTo(page, btnEl) {
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+    if (btnEl) {
+        btnEl.classList.add('active');
+    } else {
+        const match = document.querySelector(`.nav-item[data-page="${page}"]`);
+        if (match) match.classList.add('active');
+    }
+
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    const target = document.getElementById(page);
+    if (target) target.classList.add('active');
+
+    const titles = {
+        dashboard: 'Dashboard',
+        dados: 'Dados',
+        analytics: 'Análises',
+        charts: 'Gráficos',
+        insights: 'Insights',
+        comparacao: 'Comparação',
+        exportar: 'Exportar',
+        relatorio: 'Relatório'
+    };
+    document.getElementById('pageTitle').textContent = titles[page] || page;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THEME
+// ═══════════════════════════════════════════════════════════════════════════
+
+function changeTheme(theme) {
+    if (theme === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+        document.documentElement.setAttribute('data-theme', theme);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FILE UPLOAD & PARSING
+// ═══════════════════════════════════════════════════════════════════════════
+
+function handleFileUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
 
-    appData.fileName = file.name;
+    showLoading(true);
+    state.fileName = file.name;
     const ext = file.name.split('.').pop().toLowerCase();
 
-    try {
-        if (ext === 'csv') {
-            readCSV(file);
-        } else if (['xlsx', 'xls'].includes(ext)) {
-            readExcel(file);
-        } else if (ext === 'json') {
-            readJSON(file);
-        } else {
-            showNotification('❌ Formato não suportado', 'error');
-        }
-    } catch (error) {
-        showNotification(`❌ Erro: ${error.message}`, 'error');
-        console.error(error);
+    if (ext === 'csv') {
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            dynamicTyping: false,
+            complete: (results) => {
+                onDataLoaded(results.data);
+            },
+            error: (err) => {
+                showLoading(false);
+                showNotification('Erro ao ler CSV: ' + err.message, 'error');
+            }
+        });
+    } else if (ext === 'xlsx' || ext === 'xls') {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const workbook = XLSX.read(e.target.result, { type: 'binary' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                onDataLoaded(json);
+            } catch (err) {
+                showLoading(false);
+                showNotification('Erro ao ler planilha: ' + err.message, 'error');
+            }
+        };
+        reader.onerror = () => {
+            showLoading(false);
+            showNotification('Erro ao ler arquivo', 'error');
+        };
+        reader.readAsBinaryString(file);
+    } else if (ext === 'json') {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const json = JSON.parse(e.target.result);
+                onDataLoaded(Array.isArray(json) ? json : [json]);
+            } catch (err) {
+                showLoading(false);
+                showNotification('Erro ao ler JSON: ' + err.message, 'error');
+            }
+        };
+        reader.onerror = () => {
+            showLoading(false);
+            showNotification('Erro ao ler arquivo', 'error');
+        };
+        reader.readAsText(file);
+    } else {
+        showLoading(false);
+        showNotification('Formato de arquivo não suportado', 'error');
     }
 }
 
-function readCSV(file) {
-    Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete: function(results) {
-            if (results.data && results.data.length > 0) {
-                appData.data = results.data;
-                appData.columns = Object.keys(results.data[0]);
-                appData.allSheets = { 'Dados': results.data };
-                appData.selectedSheets = ['Dados'];
-                document.getElementById('sheetsSection').style.display = 'none';
-                updateUI();
-                showNotification(`✅ Arquivo carregado! ${appData.data.length} linhas`);
-            } else {
-                showNotification('❌ Arquivo vazio', 'error');
-            }
-        },
-        error: function(error) {
-            showNotification(`❌ Erro: ${error.message}`, 'error');
-        }
-    });
-}
-
-function readExcel(file) {
-    const reader = new FileReader();
-    
-    reader.onload = function(e) {
-        try {
-            const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
-            
-            if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-                showNotification('❌ Nenhuma planilha encontrada', 'error');
-                return;
-            }
-
-            appData.sheetNames = workbook.SheetNames;
-            appData.allSheets = {};
-
-            // Carregar todas as abas
-            workbook.SheetNames.forEach(sheetName => {
-                const sheet = workbook.Sheets[sheetName];
-                const rows = XLSX.utils.sheet_to_json(sheet);
-                appData.allSheets[sheetName] = rows;
-            });
-
-            // Mostrar seletor de abas
-            if (appData.sheetNames.length > 1) {
-                showSheetSelector(appData.sheetNames);
-                showNotification(`✅ ${appData.sheetNames.length} planilhas encontradas! Selecione quais carregar.`);
-            } else {
-                // Se tiver apenas uma aba, carregar automaticamente
-                appData.data = appData.allSheets[appData.sheetNames[0]];
-                appData.columns = Object.keys(appData.data[0] || {});
-                appData.selectedSheets = appData.sheetNames;
-                updateUI();
-                showNotification(`✅ Arquivo carregado! ${appData.data.length} linhas`);
-            }
-        } catch (error) {
-            showNotification(`❌ Erro ao ler Excel: ${error.message}`, 'error');
-            console.error(error);
-        }
-    };
-
-    reader.onerror = function() {
-        showNotification('❌ Erro ao ler arquivo', 'error');
-    };
-
-    reader.readAsArrayBuffer(file);
-}
-
-function readJSON(file) {
-    const reader = new FileReader();
-    
-    reader.onload = function(e) {
-        try {
-            const json = JSON.parse(e.target.result);
-            
-            if (Array.isArray(json) && json.length > 0) {
-                appData.data = json;
-                appData.columns = Object.keys(json[0]);
-                appData.allSheets = { 'Dados': json };
-                appData.selectedSheets = ['Dados'];
-                document.getElementById('sheetsSection').style.display = 'none';
-                updateUI();
-                showNotification(`✅ Arquivo carregado! ${appData.data.length} linhas`);
-            } else {
-                showNotification('❌ JSON inválido', 'error');
-            }
-        } catch (error) {
-            showNotification(`❌ Erro: ${error.message}`, 'error');
-        }
-    };
-
-    reader.readAsText(file);
-}
-
-function showSheetSelector(sheetNames) {
-    let html = '';
-    sheetNames.forEach(name => {
-        html += `
-            <label class="sheet-checkbox">
-                <input type="checkbox" value="${name}" checked>
-                ${name}
-            </label>
-        `;
-    });
-
-    document.getElementById('sheetsList').innerHTML = html;
-    document.getElementById('sheetsSection').style.display = 'block';
-}
-
-function loadSelectedSheets() {
-    const checkboxes = document.querySelectorAll('.sheet-checkbox input:checked');
-    const selected = Array.from(checkboxes).map(cb => cb.value);
-
-    if (selected.length === 0) {
-        showNotification('❌ Selecione ao menos uma planilha', 'error');
+function onDataLoaded(rows) {
+    if (!rows || rows.length === 0) {
+        showLoading(false);
+        showNotification('Arquivo vazio ou sem dados válidos', 'warning');
         return;
     }
 
-    appData.selectedSheets = selected;
+    state.data = rows;
+    state.columns = Object.keys(rows[0]);
+    detectColumnTypes();
 
-    // Combinar dados de todas as abas selecionadas
-    appData.data = [];
-    appData.columns = new Set();
+    state.currentTable.filteredData = state.data;
+    state.currentTable.page = 1;
 
-    selected.forEach(sheetName => {
-        const sheetData = appData.allSheets[sheetName] || [];
-        sheetData.forEach(row => {
-            appData.data.push({ ...row, '_sheet': sheetName });
-        });
-        sheetData.forEach(row => {
-            Object.keys(row).forEach(col => appData.columns.add(col));
-        });
-    });
-
-    appData.columns = Array.from(appData.columns);
-
-    updateUI();
-    showNotification(`✅ ${selected.length} planilha(s) carregada(s)! ${appData.data.length} linhas totais`);
-}
-
-function updateUI() {
-    document.getElementById('fileInfo').innerHTML = `
-        <strong>📁 ${appData.fileName}</strong><br>
-        ${appData.data.length} linhas × ${appData.columns.length} colunas<br>
-        ${appData.selectedSheets.length > 1 ? `(${appData.selectedSheets.length} abas)` : ''}
-    `;
-    
-    document.getElementById('settingsInfo').innerHTML = `
-        <strong>${appData.fileName}</strong><br>
-        ${appData.data.length} linhas | ${appData.columns.length} colunas<br>
-        ${appData.selectedSheets.join(', ')}
-    `;
-    
-    updateColumnSelects();
+    renderFileInfo();
+    populateColumnSelects();
     renderDashboard();
+    renderTable();
+
+    document.getElementById('btnRefresh').style.display = 'inline-block';
+    document.getElementById('btnClear').style.display = 'inline-block';
+
+    showLoading(false);
+    showNotification('✓ Arquivo carregado com sucesso!', 'success');
 }
 
-function updateColumnSelects() {
-    const numericCols = appData.columns.filter(col => {
-        if (!appData.data[0]) return false;
-        const val = appData.data[0][col];
-        return !isNaN(val) && val !== '';
+function detectColumnTypes() {
+    state.columnTypes = {};
+    state.numericColumns = [];
+    state.categoricalColumns = [];
+
+    state.columns.forEach(col => {
+        const values = state.data.map(r => r[col]).filter(v => v != null && v !== '');
+        const numericCount = values.filter(v => !isNaN(parseFloat(v)) && isFinite(v)).length;
+        const isNumeric = values.length > 0 && (numericCount / values.length) > 0.8;
+
+        if (isNumeric) {
+            state.columnTypes[col] = 'numérico';
+            state.numericColumns.push(col);
+        } else {
+            state.columnTypes[col] = 'texto';
+            state.categoricalColumns.push(col);
+        }
     });
-
-    const select = document.getElementById('chartColumn');
-    select.innerHTML = (numericCols.length > 0 ? numericCols : appData.columns)
-        .map(col => `<option value="${col}">${col}</option>`)
-        .join('');
 }
 
-// ========== NAVEGAÇÃO ==========
-function showPage(pageId) {
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.getElementById(pageId).classList.add('active');
+function renderFileInfo() {
+    const box = document.getElementById('fileInfoBox');
+    const content = document.getElementById('fileInfoContent');
+    box.style.display = 'block';
+    content.innerHTML = `
+        <p><strong>📄 ${state.fileName}</strong></p>
+        <p>${state.data.length.toLocaleString()} linhas × ${state.columns.length} colunas</p>
+    `;
+}
 
-    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
-    event.target.classList.add('active');
+function populateColumnSelects() {
+    const selectIds = ['chartColumn', 'chartColumn2', 'compColumn'];
+    selectIds.forEach(id => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        const placeholder = select.options[0] ? select.options[0].outerHTML : '';
+        select.innerHTML = placeholder + state.columns.map(col => `<option value="${col}">${col}</option>`).join('');
+    });
+}
 
-    if (appData.data.length === 0) {
-        showEmptyState();
+function clearData() {
+    state.data = [];
+    state.columns = [];
+    state.columnTypes = {};
+    state.numericColumns = [];
+    state.categoricalColumns = [];
+    state.fileName = '';
+    state.currentTable = { filteredData: [], page: 1, rowsPerPage: 25 };
+
+    document.getElementById('fileInfoBox').style.display = 'none';
+    document.getElementById('btnRefresh').style.display = 'none';
+    document.getElementById('btnClear').style.display = 'none';
+    document.getElementById('fileInput').value = '';
+
+    document.getElementById('dashboardEmpty').style.display = 'block';
+    document.getElementById('dashboardContent').style.display = 'none';
+    document.getElementById('kpiGrid').innerHTML = '';
+    document.getElementById('chartGrid').innerHTML = '';
+    document.getElementById('tableContainer').innerHTML = '';
+    document.getElementById('pagination').innerHTML = '';
+    document.getElementById('analyticsContent').innerHTML = '';
+    document.getElementById('insightsContent').innerHTML = '';
+    document.getElementById('comparacaoContent').innerHTML = '';
+    document.getElementById('chartContainer').innerHTML = '';
+
+    showNotification('Dados limpos', 'success');
+}
+
+function refreshData() {
+    if (state.data.length === 0) {
+        showNotification('Nenhum dado carregado', 'warning');
+        return;
+    }
+    detectColumnTypes();
+    renderDashboard();
+    renderTable();
+    showNotification('Dados atualizados', 'success');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderDashboard() {
+    if (state.data.length === 0) {
+        document.getElementById('dashboardEmpty').style.display = 'block';
+        document.getElementById('dashboardContent').style.display = 'none';
         return;
     }
 
-    switch(pageId) {
-        case 'dashboard': renderDashboard(); break;
-        case 'analytics': renderAnalytics(); break;
-        case 'charts': generateChart(); break;
-        case 'comparison': renderComparison(); break;
-        case 'statistics': renderStatistics(); break;
-        case 'export': renderExport(); break;
-    }
+    document.getElementById('dashboardEmpty').style.display = 'none';
+    document.getElementById('dashboardContent').style.display = 'block';
+
+    renderKPIs();
+    renderDashboardCharts();
 }
 
-function showEmptyState() {
-    document.getElementById('dashboardContent').innerHTML = `
-        <div class="empty-state">
-            <div class="icon">📊</div>
-            <h3>Nenhum arquivo carregado</h3>
-            <p>Clique em "📂 Abrir Arquivo" para começar</p>
+function renderKPIs() {
+    const stats = calculateStatistics();
+    const kpiHtml = `
+        <div class="kpi-card">
+            <div class="kpi-label">📊 Registros</div>
+            <div class="kpi-value">${stats.rows.toLocaleString()}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">📋 Colunas</div>
+            <div class="kpi-value">${stats.columns}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">⚠️ Nulos</div>
+            <div class="kpi-value">${stats.nulls.toLocaleString()}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">📌 Duplicados</div>
+            <div class="kpi-value">${stats.duplicates}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">🔢 Numéricas</div>
+            <div class="kpi-value">${stats.numericCols}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">🏷️ Categóricas</div>
+            <div class="kpi-value">${stats.categoricalCols}</div>
         </div>
     `;
+    document.getElementById('kpiGrid').innerHTML = kpiHtml;
 }
 
-// ========== DASHBOARD ==========
-function renderDashboard() {
-    const stats = getStats();
-    
-    let html = '<div class="stat-grid">';
-    html += `<div class="stat-card"><div class="label">Linhas</div><div class="value">${stats.rows}</div></div>`;
-    html += `<div class="stat-card"><div class="label">Colunas</div><div class="value">${stats.cols}</div></div>`;
-    html += `<div class="stat-card"><div class="label">Faltantes</div><div class="value">${stats.missing}%</div></div>`;
-    html += `<div class="stat-card"><div class="label">Abas</div><div class="value">${appData.selectedSheets.length}</div></div>`;
-    html += '</div>';
-
-    html += '<div class="card"><h3>Colunas</h3><table><thead><tr><th>Nome</th><th>Tipo</th><th>Únicos</th></tr></thead><tbody>';
-    
-    appData.columns.forEach(col => {
-        if (col === '_sheet') return;
-        const unique = new Set(appData.data.map(r => r[col])).size;
-        const type = isNumericColumn(col) ? 'Número' : 'Texto';
-        html += `<tr><td>${col}</td><td>${type}</td><td>${unique}</td></tr>`;
+function calculateStatistics() {
+    const totalCells = state.data.length * state.columns.length;
+    let nullCount = 0;
+    state.columns.forEach(col => {
+        state.data.forEach(row => {
+            if (row[col] == null || row[col] === '') nullCount++;
+        });
     });
 
-    html += '</tbody></table></div>';
+    const duplicates = state.data.length - new Set(state.data.map(r => JSON.stringify(r))).size;
 
-    document.getElementById('dashboardContent').innerHTML = html;
-}
-
-// ========== ANÁLISES ==========
-function renderAnalytics() {
-    let html = '';
-
-    appData.columns.forEach(col => {
-        if (col === '_sheet' || !isNumericColumn(col)) return;
-
-        const values = appData.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
-        if (values.length === 0) return;
-
-        const mean = values.reduce((a, b) => a + b) / values.length;
-        const sorted = values.sort((a, b) => a - b);
-        const median = sorted[Math.floor(sorted.length / 2)];
-        const min = Math.min(...values);
-        const max = Math.max(...values);
-        const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
-        const stdDev = Math.sqrt(variance);
-
-        html += `<div class="card">
-            <h3>📌 ${col}</h3>
-            <table>
-                <tr><td><strong>Média:</strong></td><td>${mean.toFixed(2)}</td></tr>
-                <tr><td><strong>Mediana:</strong></td><td>${median.toFixed(2)}</td></tr>
-                <tr><td><strong>Desvio Padrão:</strong></td><td>${stdDev.toFixed(2)}</td></tr>
-                <tr><td><strong>Mínimo:</strong></td><td>${min.toFixed(2)}</td></tr>
-                <tr><td><strong>Máximo:</strong></td><td>${max.toFixed(2)}</td></tr>
-            </table>
-        </div>`;
-    });
-
-    document.getElementById('analyticsContent').innerHTML = html || '<p>Nenhuma coluna numérica</p>';
-}
-
-// ========== GRÁFICOS ==========
-function generateChart() {
-    if (appData.data.length === 0) return;
-
-    const selectElement = document.getElementById('chartColumn');
-    const selectedOptions = Array.from(selectElement.selectedOptions).map(opt => opt.value);
-    const type = document.getElementById('chartType').value;
-
-    if (selectedOptions.length === 0) {
-        showNotification('Selecione ao menos uma coluna', 'error');
-        return;
-    }
-
-    if (appData.currentChart) appData.currentChart.destroy();
-
-    const ctx = document.getElementById('myChart').getContext('2d');
-    
-    // Cores para múltiplos datasets
-    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
-    
-    const datasets = selectedOptions.map((column, idx) => {
-        const values = appData.data
-            .map(r => parseFloat(r[column]))
-            .filter(v => !isNaN(v))
-            .slice(0, 20);
-
-        if (values.length === 0) return null;
-
-        const color = colors[idx % colors.length];
-        
-        return {
-            label: column,
-            data: values,
-            borderColor: color,
-            backgroundColor: type === 'pie' ? colors : `${color}40`,
-            fill: type !== 'pie',
-            tension: 0.4,
-            borderWidth: 2
-        };
-    }).filter(d => d !== null);
-
-    if (datasets.length === 0) {
-        showNotification('Nenhuma coluna com dados numéricos', 'error');
-        return;
-    }
-
-    const labels = Array.from({length: 20}, (_, i) => i + 1);
-
-    const config = {
-        type: type,
-        data: {
-            labels: labels,
-            datasets: datasets
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            plugins: {
-                legend: {
-                    labels: { color: '#d1d5db' }
-                }
-            },
-            scales: type !== 'pie' ? {
-                y: {
-                    ticks: { color: '#d1d5db' }
-                },
-                x: {
-                    ticks: { color: '#d1d5db' }
-                }
-            } : undefined
-        }
+    return {
+        rows: state.data.length,
+        columns: state.columns.length,
+        nulls: nullCount,
+        duplicates: duplicates,
+        numericCols: state.numericColumns.length,
+        categoricalCols: state.categoricalColumns.length,
+        totalCells: totalCells
     };
-
-    appData.currentChart = new Chart(ctx, config);
-    showNotification(`✅ Gráfico gerado com ${selectedOptions.length} coluna(s)!`);
 }
 
-// ========== COMPARAÇÃO ==========
-function renderComparison() {
-    let html = '';
-
-    appData.columns.forEach((col, idx) => {
-        if (col === '_sheet') return;
-        const values = appData.data.map(r => r[col]);
-        const unique = new Set(values).size;
-        const nulls = values.filter(v => v === '' || v === null).length;
-
-        html += `<div class="card">
-            <h3>${idx}️⃣ ${col}</h3>
-            <table>
-                <tr><td><strong>Nulos:</strong></td><td>${nulls}</td></tr>
-                <tr><td><strong>Únicos:</strong></td><td>${unique}</td></tr>
-            </table>
-        </div>`;
-    });
-
-    document.getElementById('comparisonContent').innerHTML = html;
-}
-
-// ========== ESTATÍSTICAS ==========
-function renderStatistics() {
-    const stats = getStats();
-
-    let html = `<div class="stat-grid">
-        <div class="stat-card"><div class="label">Total</div><div class="value">${stats.rows}</div></div>
-        <div class="stat-card"><div class="label">Colunas</div><div class="value">${stats.cols}</div></div>
-        <div class="stat-card"><div class="label">Completo</div><div class="value">${(100 - stats.missing).toFixed(1)}%</div></div>
-    </div>`;
-
-    html += '<div class="card"><h3>Detalhes</h3><table><thead><tr><th>Coluna</th><th>Tipo</th><th>Nulos</th></tr></thead><tbody>';
-
-    appData.columns.forEach(col => {
-        if (col === '_sheet') return;
-        const nulls = appData.data.filter(r => r[col] === '' || r[col] === null).length;
-        const type = isNumericColumn(col) ? 'Número' : 'Texto';
-        html += `<tr><td>${col}</td><td>${type}</td><td>${nulls}</td></tr>`;
-    });
-
-    html += '</tbody></table></div>';
-    document.getElementById('statisticsContent').innerHTML = html;
-}
-
-// ========== EXPORTAÇÃO ==========
-function renderExport() {
-    let html = '<table><thead><tr>';
+function renderDashboardCharts() {
+    const chartGrid = document.getElementById('chartGrid');
+    chartGrid.innerHTML = '';
     
-    appData.columns.filter(c => c !== '_sheet').forEach(col => html += `<th>${col}</th>`);
+    // Primeiro gráfico: distribuição primeira coluna numérica
+    if (state.numericColumns.length > 0) {
+        const col = state.numericColumns[0];
+        const container = document.createElement('div');
+        container.className = 'chart-container';
+        chartGrid.appendChild(container);
+        renderHistogram(col, container);
+    }
+    
+    // Segundo gráfico: Top categorias
+    if (state.categoricalColumns.length > 0) {
+        const col = state.categoricalColumns[0];
+        const container = document.createElement('div');
+        container.className = 'chart-container';
+        chartGrid.appendChild(container);
+        renderBarChart(col, container);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════
+
+function showLoading(show) {
+    document.getElementById('loading').style.display = show ? 'flex' : 'none';
+}
+
+function showNotification(message, type = 'info') {
+    const notif = document.getElementById('notification');
+    notif.textContent = message;
+    notif.className = `notification ${type} show`;
+    
+    setTimeout(() => {
+        notif.classList.remove('show');
+    }, 4000);
+}
+
+function updateChartOptions() {
+    const type = document.getElementById('chartType').value;
+    const col2 = document.getElementById('chartColumn2');
+    col2.style.display = ['scatter', 'bubble', 'linha'].includes(type) ? 'block' : 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ANALYTICS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function loadAnalytics() {
+    if (state.data.length === 0) {
+        showNotification('Carregue um arquivo', 'warning');
+        return;
+    }
+    
+    showLoading(true);
+    setTimeout(() => {
+        const analytics = calculateAnalytics();
+        const html = renderAnalyticsTable(analytics);
+        document.getElementById('analyticsContent').innerHTML = html;
+        showLoading(false);
+        showNotification('Análises calculadas', 'success');
+    }, 500);
+}
+
+function calculateAnalytics() {
+    const result = {};
+    state.numericColumns.forEach(col => {
+        const values = state.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+        if (values.length === 0) return;
+        
+        values.sort((a, b) => a - b);
+        const sum = values.reduce((a, b) => a + b, 0);
+        const mean = sum / values.length;
+        const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+        
+        result[col] = {
+            count: values.length,
+            mean: mean.toFixed(2),
+            median: values[Math.floor(values.length / 2)].toFixed(2),
+            std: Math.sqrt(variance).toFixed(2),
+            min: values[0].toFixed(2),
+            max: values[values.length - 1].toFixed(2),
+            q1: values[Math.floor(values.length * 0.25)].toFixed(2),
+            q3: values[Math.floor(values.length * 0.75)].toFixed(2)
+        };
+    });
+    return result;
+}
+
+function renderAnalyticsTable(analytics) {
+    let html = '<table><thead><tr><th>Coluna</th><th>Count</th><th>Média</th><th>Mediana</th><th>Desvio</th><th>Min</th><th>Max</th></tr></thead><tbody>';
+    
+    Object.entries(analytics).forEach(([col, stats]) => {
+        html += `<tr>
+            <td><strong>${col}</strong></td>
+            <td>${stats.count}</td>
+            <td>${stats.mean}</td>
+            <td>${stats.median}</td>
+            <td>${stats.std}</td>
+            <td>${stats.min}</td>
+            <td>${stats.max}</td>
+        </tr>`;
+    });
+    
+    html += '</tbody></table>';
+    return html;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CHARTS - GRÁFICOS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function generateChart() {
+    const type = document.getElementById('chartType').value;
+    const col = document.getElementById('chartColumn').value;
+    const col2 = document.getElementById('chartColumn2').value;
+    
+    if (!type || !col) {
+        showNotification('Selecione tipo e coluna', 'warning');
+        return;
+    }
+    
+    showLoading(true);
+    setTimeout(() => {
+        const container = document.getElementById('chartContainer');
+        container.innerHTML = '';
+        
+        if (type === 'histograma') renderHistogram(col, container);
+        else if (type === 'boxplot') renderBoxplot(col, container);
+        else if (type === 'barras') renderBarChart(col, container);
+        else if (type === 'pizza') renderPieChart(col, container);
+        else if (type === 'linha') renderLineChart(col, container);
+        else if (type === 'scatter') renderScatterChart(col, col2, container);
+        else if (type === 'heatmap') renderHeatmap(container);
+        else if (type === 'sunburst') renderSunburst(col, container);
+        else if (type === 'bubble') renderBubbleChart(col, col2, container);
+        
+        showLoading(false);
+        showNotification('Gráfico gerado', 'success');
+    }, 300);
+}
+
+function renderHistogram(col, container) {
+    const values = state.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+    Plotly.newPlot(container, [{
+        x: values,
+        type: 'histogram',
+        marker: { color: '#1a56db' }
+    }], {
+        title: `Distribuição — ${col}`,
+        xaxis: { title: col },
+        yaxis: { title: 'Frequência' }
+    }, { responsive: true });
+}
+
+function renderBoxplot(col, container) {
+    const values = state.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+    Plotly.newPlot(container, [{
+        y: values,
+        type: 'box',
+        marker: { color: '#1a56db' }
+    }], {
+        title: `Boxplot — ${col}`,
+        yaxis: { title: col }
+    }, { responsive: true });
+}
+
+function renderBarChart(col, container) {
+    const counts = {};
+    state.data.forEach(r => {
+        const v = r[col];
+        counts[v] = (counts[v] || 0) + 1;
+    });
+    
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+    Plotly.newPlot(container, [{
+        x: sorted.map(e => e[0]),
+        y: sorted.map(e => e[1]),
+        type: 'bar',
+        marker: { color: '#1a56db' }
+    }], {
+        title: `Top 15 — ${col}`,
+        xaxis: { title: col },
+        yaxis: { title: 'Frequência' }
+    }, { responsive: true });
+}
+
+function renderPieChart(col, container) {
+    const counts = {};
+    state.data.forEach(r => {
+        const v = r[col];
+        counts[v] = (counts[v] || 0) + 1;
+    });
+    
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    Plotly.newPlot(container, [{
+        labels: sorted.map(e => e[0]),
+        values: sorted.map(e => e[1]),
+        type: 'pie'
+    }], {
+        title: `Proporção — ${col}`
+    }, { responsive: true });
+}
+
+function renderLineChart(col, container) {
+    const values = state.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+    Plotly.newPlot(container, [{
+        y: values,
+        type: 'scatter',
+        mode: 'lines',
+        marker: { color: '#1a56db' }
+    }], {
+        title: `Série Temporal — ${col}`,
+        xaxis: { title: 'Índice' },
+        yaxis: { title: col }
+    }, { responsive: true });
+}
+
+function renderScatterChart(col1, col2, container) {
+    if (!col2) {
+        showNotification('Selecione segunda coluna', 'warning');
+        return;
+    }
+    
+    const x = state.data.map(r => parseFloat(r[col1])).filter(v => !isNaN(v));
+    const y = state.data.map(r => parseFloat(r[col2])).filter(v => !isNaN(v));
+    
+    Plotly.newPlot(container, [{
+        x: x,
+        y: y,
+        type: 'scatter',
+        mode: 'markers',
+        marker: { size: 8, color: '#1a56db', opacity: 0.6 }
+    }], {
+        title: `Dispersão — ${col1} × ${col2}`,
+        xaxis: { title: col1 },
+        yaxis: { title: col2 }
+    }, { responsive: true });
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INSIGHTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function generateInsights() {
+    if (state.data.length === 0) {
+        showNotification('Carregue um arquivo', 'warning');
+        return;
+    }
+    
+    showLoading(true);
+    const insights = [];
+    
+    // Nulos
+    state.columns.forEach(col => {
+        const nullCount = state.data.filter(r => r[col] == null || r[col] === '').length;
+        if (nullCount > 0) {
+            const pct = (nullCount / state.data.length * 100).toFixed(1);
+            insights.push({
+                severity: pct >= 30 ? 'critical' : 'warning',
+                category: 'NULOS',
+                message: `"${col}" possui ${nullCount} nulos (${pct}%)`
+            });
+        }
+    });
+    
+    // Duplicatas
+    const duplicates = state.data.length - new Set(state.data.map(r => JSON.stringify(r))).size;
+    if (duplicates > 0) {
+        insights.push({
+            severity: 'warning',
+            category: 'DUPLICATAS',
+            message: `${duplicates} linhas duplicadas`
+        });
+    }
+    
+    // Distribuição
+    state.numericColumns.slice(0, 3).forEach(col => {
+        const values = state.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+        if (values.length === 0) return; // avoid divide-by-zero
+        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+        const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
+        const std = Math.sqrt(variance) || 0;
+        const skewness = std === 0 ? 0 : values.reduce((sum, v) => sum + Math.pow(v - mean, 3), 0) / (values.length * Math.pow(std, 3));
+
+        if (Math.abs(skewness) > 2) {
+            insights.push({
+                severity: 'info',
+                category: 'DISTRIBUIÇÃO',
+                message: `"${col}" possui distribuição muito assimétrica (skewness: ${skewness.toFixed(2)})`
+            });
+        }
+    });
+    
+    showLoading(false);
+    const html = insights.map(i => `
+        <div class="insight-item ${i.severity}">
+            <div class="insight-icon">${i.severity === 'critical' ? '🔴' : i.severity === 'warning' ? '⚠️' : 'ℹ️'}</div>
+            <div class="insight-content">
+                <h4>${i.category}</h4>
+                <p>${i.message}</p>
+            </div>
+        </div>
+    `).join('');
+    
+    document.getElementById('insightsContent').innerHTML = html || '<p>Nenhum insight detectado</p>';
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DATA TABLE
+// ═══════════════════════════════════════════════════════════════════════════
+
+function updateTable() {
+    state.currentTable.filteredData = state.data;
+    renderTable();
+}
+
+function filterTable() {
+    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+    state.currentTable.filteredData = state.data.filter(row =>
+        Object.values(row).some(v => String(v).toLowerCase().includes(searchTerm))
+    );
+    state.currentTable.page = 1;
+    renderTable();
+}
+
+function renderTable() {
+    const rowsPerPageEl = document.getElementById('rowsPerPage');
+    const rowsPerPage = rowsPerPageEl ? parseInt(rowsPerPageEl.value) || state.currentTable.rowsPerPage : state.currentTable.rowsPerPage;
+    const start = (state.currentTable.page - 1) * rowsPerPage;
+    const end = start + rowsPerPage;
+    const pageData = (state.currentTable.filteredData || []).slice(start, end);
+
+    let html = '<table><thead><tr>';
+    state.columns.forEach(col => html += `<th>${col}</th>`);
     html += '</tr></thead><tbody>';
 
-    appData.data.slice(0, 10).forEach(row => {
-        html += '<tr>';
-        appData.columns.filter(c => c !== '_sheet').forEach(col => html += `<td>${row[col]}</td>`);
-        html += '</tr>';
-    });
+    if (pageData.length === 0) {
+        html += `<tr><td colspan="${state.columns.length}" style="text-align:center;padding:12px">Nenhum registro</td></tr>`;
+    } else {
+        pageData.forEach(row => {
+            html += '<tr>';
+            state.columns.forEach(col => html += `<td>${row[col] || '-'}</td>`);
+            html += '</tr>';
+        });
+    }
 
     html += '</tbody></table>';
-    document.getElementById('exportPreview').innerHTML = html;
+    document.getElementById('tableContainer').innerHTML = html;
+
+    // Pagination (build DOM buttons to avoid incorrect global onclicks)
+    const totalPages = Math.max(1, Math.ceil(((state.currentTable.filteredData || []).length) / rowsPerPage));
+    const paginationEl = document.getElementById('pagination');
+    paginationEl.innerHTML = '';
+    for (let i = 1; i <= totalPages; i++) {
+        const btn = document.createElement('button');
+        if (i === state.currentTable.page) btn.classList.add('active');
+        btn.textContent = i;
+        btn.addEventListener('click', () => goToTablePage(i));
+        paginationEl.appendChild(btn);
+    }
 }
+
+function goToTablePage(page) {
+    state.currentTable.page = page;
+    renderTable();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT
+// ═══════════════════════════════════════════════════════════════════════════
 
 function exportCSV() {
-    if (appData.data.length === 0) return;
-
-    const cols = appData.columns.filter(c => c !== '_sheet');
-    let csv = cols.join(',') + '\n';
-    appData.data.forEach(row => {
-        csv += cols.map(col => `"${row[col] || ''}"`).join(',') + '\n';
-    });
-
-    downloadFile(csv, 'text/csv', 'export.csv');
-}
-
-function exportJSON() {
-    if (appData.data.length === 0) return;
-    const cols = appData.columns.filter(c => c !== '_sheet');
-    const filtered = appData.data.map(row => {
-        const obj = {};
-        cols.forEach(col => obj[col] = row[col]);
-        return obj;
-    });
-    downloadFile(JSON.stringify(filtered, null, 2), 'application/json', 'export.json');
+    const csv = [state.columns.join(','), ...state.data.map(r => state.columns.map(c => r[c]).join(','))].join('\n');
+    downloadFile(csv, 'data.csv', 'text/csv');
+    showNotification('CSV exportado', 'success');
 }
 
 function exportExcel() {
-    if (appData.data.length === 0) return;
-
-    const cols = appData.columns.filter(c => c !== '_sheet');
-    const filtered = appData.data.map(row => {
-        const obj = {};
-        cols.forEach(col => obj[col] = row[col]);
-        return obj;
-    });
-
-    const ws = XLSX.utils.json_to_sheet(filtered);
     const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(state.data);
     XLSX.utils.book_append_sheet(wb, ws, 'Data');
-    XLSX.writeFile(wb, 'export.xlsx');
-    showNotification('✅ Excel exportado!');
+    XLSX.writeFile(wb, 'data.xlsx');
+    showNotification('Excel exportado', 'success');
+}
+
+function exportJSON() {
+    const json = JSON.stringify(state.data, null, 2);
+    downloadFile(json, 'data.json', 'application/json');
+    showNotification('JSON exportado', 'success');
 }
 
 function exportPDF() {
-    if (appData.data.length === 0) {
-        showNotification('Carregue um arquivo primeiro', 'error');
+    if (state.data.length === 0) {
+        showNotification('Carregue um arquivo', 'warning');
         return;
     }
 
     try {
-        showNotification('⏳ Gerando PDF... aguarde', 'success');
+        showLoading(true);
 
-        // Aguardar um pouco para garantir que html2pdf esteja pronto
-        setTimeout(() => {
-            let pdfContent = `
-                <div style="font-family: Arial, sans-serif; color: #333; padding: 20px;">
-                    <h1 style="color: #3b82f6; border-bottom: 3px solid #3b82f6; padding-bottom: 10px;">
-                        📊 DataAnalyzer Pro - Relatório
-                    </h1>
-                    
-                    <p style="margin: 10px 0;"><strong>Arquivo:</strong> ${appData.fileName}</p>
-                    <p style="margin: 10px 0;"><strong>Data:</strong> ${new Date().toLocaleDateString('pt-BR')}</p>
-                    <p style="margin: 10px 0;"><strong>Hora:</strong> ${new Date().toLocaleTimeString('pt-BR')}</p>
-                    <p style="margin: 10px 0;"><strong>Abas Carregadas:</strong> ${appData.selectedSheets.join(', ')}</p>
-                    
-                    <hr style="margin: 30px 0; border: none; border-top: 2px solid #ddd;">
-            `;
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
-            // Dashboard
-            if (document.getElementById('pdfDashboard').checked) {
-                const stats = getStats();
-                pdfContent += `
-                    <h2 style="color: #1f2937; border-left: 5px solid #3b82f6; padding-left: 15px; margin-top: 20px;">
-                        📊 Dashboard
-                    </h2>
-                    
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0;">
-                        <div style="background: #f0f4ff; border-left: 4px solid #3b82f6; padding: 15px; border-radius: 4px;">
-                            <p style="margin: 0; font-size: 12px; color: #666;">TOTAL DE LINHAS</p>
-                            <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: bold; color: #3b82f6;">${stats.rows}</p>
-                        </div>
-                        <div style="background: #f0f4ff; border-left: 4px solid #10b981; padding: 15px; border-radius: 4px;">
-                            <p style="margin: 0; font-size: 12px; color: #666;">TOTAL DE COLUNAS</p>
-                            <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: bold; color: #10b981;">${stats.cols}</p>
-                        </div>
-                        <div style="background: #f0f4ff; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 4px;">
-                            <p style="margin: 0; font-size: 12px; color: #666;">DADOS FALTANTES</p>
-                            <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: bold; color: #f59e0b;">${stats.missing}%</p>
-                        </div>
-                        <div style="background: #f0f4ff; border-left: 4px solid #ef4444; padding: 15px; border-radius: 4px;">
-                            <p style="margin: 0; font-size: 12px; color: #666;">COMPLETUDE</p>
-                            <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: bold; color: #ef4444;">${(100 - stats.missing).toFixed(1)}%</p>
-                        </div>
-                    </div>
-                `;
-            }
+        doc.setFontSize(14);
+        doc.setTextColor(26, 86, 219);
+        doc.text(state.fileName || 'Dados', 14, 12);
+        doc.setFontSize(9);
+        doc.setTextColor(120, 120, 120);
+        doc.text(`${state.data.length.toLocaleString('pt-BR')} registros × ${state.columns.length} colunas — exportado em ${new Date().toLocaleString('pt-BR')}`, 14, 18);
 
-            // Análises
-            if (document.getElementById('pdfAnalytics').checked) {
-                pdfContent += `
-                    <h2 style="color: #1f2937; border-left: 5px solid #3b82f6; padding-left: 15px; margin-top: 30px;">
-                        📊 Análises
-                    </h2>
-                    
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
-                        <thead>
-                            <tr style="background-color: #3b82f6; color: white;">
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Coluna</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Média</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Mediana</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Mín</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Máx</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Desvio</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                `;
+        doc.autoTable({
+            startY: 24,
+            head: [state.columns],
+            body: state.data.map(row => state.columns.map(c => row[c] != null && row[c] !== '' ? String(row[c]) : '-')),
+            styles: { fontSize: 8, cellPadding: 2 },
+            headStyles: { fillColor: [26, 86, 219], textColor: 255 },
+            alternateRowStyles: { fillColor: [249, 250, 251] },
+            margin: { top: 24, left: 10, right: 10 },
+            theme: 'grid'
+        });
 
-                appData.columns.forEach((col, idx) => {
-                    if (col === '_sheet' || !isNumericColumn(col)) return;
-                    
-                    const values = appData.data
-                        .map(r => parseFloat(r[col]))
-                        .filter(v => !isNaN(v));
-                    
-                    if (values.length === 0) return;
+        const pageCount = doc.internal.getNumberOfPages();
+        for (let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.setTextColor(150, 150, 150);
+            doc.text(`Página ${i} de ${pageCount} — DataAnalyzer Pro v3.0`, doc.internal.pageSize.getWidth() / 2, doc.internal.pageSize.getHeight() - 6, { align: 'center' });
+        }
 
-                    const mean = (values.reduce((a, b) => a + b) / values.length).toFixed(2);
-                    const sorted = [...values].sort((a, b) => a - b);
-                    const median = sorted[Math.floor(sorted.length / 2)].toFixed(2);
-                    const min = Math.min(...values).toFixed(2);
-                    const max = Math.max(...values).toFixed(2);
-                    const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
-                    const stdDev = Math.sqrt(variance).toFixed(2);
-
-                    const bgColor = idx % 2 === 0 ? '#ffffff' : '#f9fafb';
-                    pdfContent += `
-                        <tr style="background-color: ${bgColor};">
-                            <td style="border: 1px solid #ddd; padding: 10px;"><strong>${col}</strong></td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${mean}</td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${median}</td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${min}</td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${max}</td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${stdDev}</td>
-                        </tr>
-                    `;
-                });
-
-                pdfContent += '</tbody></table>';
-            }
-
-            // Tabela de dados
-            if (document.getElementById('pdfTable').checked) {
-                const cols = appData.columns.filter(c => c !== '_sheet');
-                
-                pdfContent += `
-                    <h2 style="color: #1f2937; border-left: 5px solid #3b82f6; padding-left: 15px; margin-top: 30px;">
-                        📋 Dados (Primeiras 20 Linhas)
-                    </h2>
-                    
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 11px;">
-                        <thead>
-                            <tr style="background-color: #3b82f6; color: white;">
-                `;
-                
-                cols.forEach(col => {
-                    pdfContent += `<th style="border: 1px solid #ddd; padding: 8px; text-align: left;">${col}</th>`;
-                });
-                
-                pdfContent += `
-                            </tr>
-                        </thead>
-                        <tbody>
-                `;
-
-                appData.data.slice(0, 20).forEach((row, idx) => {
-                    const bgColor = idx % 2 === 0 ? '#ffffff' : '#f9fafb';
-                    pdfContent += `<tr style="background-color: ${bgColor};">`;
-                    
-                    cols.forEach(col => {
-                        pdfContent += `<td style="border: 1px solid #ddd; padding: 8px;">${row[col] || ''}</td>`;
-                    });
-                    
-                    pdfContent += '</tr>';
-                });
-
-                pdfContent += '</tbody></table>';
-            }
-
-            // Comparação
-            if (document.getElementById('pdfComparison').checked) {
-                pdfContent += `
-                    <h2 style="color: #1f2937; border-left: 5px solid #3b82f6; padding-left: 15px; margin-top: 30px;">
-                        🔄 Comparação de Colunas
-                    </h2>
-                    
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
-                        <thead>
-                            <tr style="background-color: #3b82f6; color: white;">
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Coluna</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Tipo</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Nulos</th>
-                                <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Únicos</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                `;
-
-                appData.columns.forEach((col, idx) => {
-                    if (col === '_sheet') return;
-                    
-                    const values = appData.data.map(r => r[col]);
-                    const unique = new Set(values).size;
-                    const nulls = values.filter(v => v === '' || v === null).length;
-                    const type = isNumericColumn(col) ? 'Número' : 'Texto';
-                    
-                    const bgColor = idx % 2 === 0 ? '#ffffff' : '#f9fafb';
-                    pdfContent += `
-                        <tr style="background-color: ${bgColor};">
-                            <td style="border: 1px solid #ddd; padding: 10px;"><strong>${col}</strong></td>
-                            <td style="border: 1px solid #ddd; padding: 10px;">${type}</td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${nulls}</td>
-                            <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${unique}</td>
-                        </tr>
-                    `;
-                });
-
-                pdfContent += '</tbody></table>';
-            }
-
-            pdfContent += '</div>';
-
-            // Gerar PDF usando html2pdf
-            const element = document.createElement('div');
-            element.innerHTML = pdfContent;
-
-            const opt = {
-                margin: 10,
-                filename: `DataAnalyzer_Report_${new Date().getTime()}.pdf`,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true, logging: false },
-                jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' }
-            };
-
-            if (typeof html2pdf !== 'undefined') {
-                html2pdf().set(opt).from(element).save().then(() => {
-                    showNotification('✅ PDF gerado e baixado com sucesso!');
-                }).catch(err => {
-                    console.error('Erro html2pdf:', err);
-                    downloadHTMLAsFallback(pdfContent);
-                });
-            } else {
-                downloadHTMLAsFallback(pdfContent);
-            }
-
-        }, 100); // Pequeno delay para garantir que html2pdf está pronto
-
-    } catch (error) {
-        showNotification(`❌ Erro: ${error.message}`, 'error');
-        console.error('Erro ao gerar PDF:', error);
+        doc.save('data.pdf');
+        showLoading(false);
+        showNotification('PDF exportado', 'success');
+    } catch (err) {
+        showLoading(false);
+        showNotification('Erro ao gerar PDF: ' + err.message, 'error');
     }
 }
 
-function downloadHTMLAsFallback(htmlContent) {
-    const fullHTML = `
-        <!DOCTYPE html>
-        <html lang="pt-BR">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>DataAnalyzer Report</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body { font-family: Arial, sans-serif; background: white; color: #333; }
-                @page { margin: 20mm; }
-                @media print { body { margin: 0; } }
-            </style>
-        </head>
-        <body>
-            ${htmlContent}
-        </body>
-        </html>
-    `;
-
-    const blob = new Blob([fullHTML], { type: 'text/html;charset=utf-8' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `DataAnalyzer_Report_${new Date().getTime()}.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    
-    showNotification('📄 HTML baixado - Abra no navegador e use Ctrl+P para salvar como PDF');
+function exportHTML() {
+    const html = `<html><head><meta charset="UTF-8"><title>Data</title><style>table{border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}</style></head><body><table><thead><tr>${state.columns.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${state.data.map(r => `<tr>${state.columns.map(c => `<td>${r[c]}</td>`).join('')}</tr>`).join('')}</tbody></table></body></html>`;
+    downloadFile(html, 'data.html', 'text/html');
+    showNotification('HTML exportado', 'success');
 }
 
-function downloadFile(content, type, filename) {
+function downloadFile(content, filename, type) {
     const blob = new Blob([content], { type });
-    const url = window.URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
-    document.body.appendChild(a);
     a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-    showNotification('✅ Arquivo exportado!');
+    URL.revokeObjectURL(url);
 }
 
-// ========== UTILITÁRIOS ==========
-function isNumericColumn(col) {
-    return appData.data.some(r => !isNaN(parseFloat(r[col])) && r[col] !== '');
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// REPORT GENERATION - PROFESSIONAL PDF
+// ═══════════════════════════════════════════════════════════════════════════
 
-function getStats() {
-    let missing = 0;
-    appData.data.forEach(row => {
-        appData.columns.forEach(col => {
-            if (col === '_sheet') return;
-            if (row[col] === '' || row[col] === null) missing++;
-        });
-    });
+// ═══════════════════════════════════════════════════════════════════════════
+// REPORT GENERATION - PROFESSIONAL PDF (jsPDF + autoTable, geração nativa)
+// ═══════════════════════════════════════════════════════════════════════════
 
-    const cols = appData.columns.filter(c => c !== '_sheet').length;
-    const total = appData.data.length * cols;
-    return {
-        rows: appData.data.length,
-        cols: cols,
-        missing: ((missing / total) * 100).toFixed(1)
-    };
-}
+function generateReport() {
+    if (state.data.length === 0) {
+        showNotification('Carregue um arquivo', 'warning');
+        return;
+    }
 
-function showNotification(msg, type = 'success') {
-    const div = document.createElement('div');
-    div.style.cssText = `
-        position: fixed; top: 20px; right: 20px;
-        background: ${type === 'error' ? '#ef4444' : '#10b981'};
-        color: white; padding: 15px 20px;
-        border-radius: 8px; z-index: 9999;
-        font-weight: 600;
-    `;
-    div.textContent = msg;
-    document.body.appendChild(div);
+    const title = document.getElementById('relatorioTitle').value || 'Relatório Executivo';
+    const includeSummary = document.getElementById('relSummary').checked;
+    const includeStats = document.getElementById('relStats').checked;
+    const includeGraphs = document.getElementById('relGraphs').checked;
+    const includeInsights = document.getElementById('relInsights').checked;
+
+    showLoading(true);
 
     setTimeout(() => {
-        div.remove();
-    }, 3000);
+        try {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const margin = 14;
+
+            const now = new Date();
+            const dateStr = now.toLocaleString('pt-BR');
+
+            const stats = calculateStatistics();
+            const insights = generateInsightsData();
+            const analytics = calculateAnalytics();
+
+            const PRIMARY = [26, 86, 219];
+            const GRAY = [102, 102, 102];
+            const LIGHT = [249, 250, 251];
+            const SEVERITY_COLORS = {
+                critical: [220, 38, 38],
+                warning: [217, 119, 6],
+                info: [2, 132, 199]
+            };
+
+            // ── CAPA ──────────────────────────────────────────────────────
+            doc.setFontSize(26);
+            doc.setTextColor(...PRIMARY);
+            doc.text(title, margin, 30);
+
+            doc.setFontSize(11);
+            doc.setTextColor(...GRAY);
+            doc.text('Relatório Executivo', margin, 39);
+            doc.text(`Data: ${dateStr}`, margin, 46);
+            doc.text('Ferramenta: DataAnalyzer Pro v3.0', margin, 52);
+            doc.setDrawColor(...PRIMARY);
+            doc.setLineWidth(0.8);
+            doc.line(margin, 57, pageWidth - margin, 57);
+
+            let y = 68;
+
+            // ── RESUMO EXECUTIVO (KPIs) ───────────────────────────────────
+            if (includeSummary) {
+                doc.setFontSize(16);
+                doc.setTextColor(...PRIMARY);
+                doc.text('Resumo Executivo', margin, y);
+                y += 8;
+
+                const kpis = [
+                    ['Registros', stats.rows.toLocaleString('pt-BR')],
+                    ['Colunas', String(stats.columns)],
+                    ['Nulos', stats.nulls.toLocaleString('pt-BR')],
+                    ['Duplicados', String(stats.duplicates)],
+                    ['Numéricas', String(stats.numericCols)],
+                    ['Categóricas', String(stats.categoricalCols)]
+                ];
+
+                const boxWidth = (pageWidth - margin * 2 - 10) / 3;
+                const boxHeight = 20;
+                kpis.forEach((kpi, i) => {
+                    const col = i % 3;
+                    const row = Math.floor(i / 3);
+                    const x = margin + col * (boxWidth + 5);
+                    const boxY = y + row * (boxHeight + 5);
+
+                    doc.setFillColor(...LIGHT);
+                    doc.setDrawColor(...PRIMARY);
+                    doc.roundedRect(x, boxY, boxWidth, boxHeight, 2, 2, 'FD');
+
+                    doc.setFontSize(8);
+                    doc.setTextColor(...GRAY);
+                    doc.text(kpi[0], x + 4, boxY + 7);
+
+                    doc.setFontSize(15);
+                    doc.setTextColor(...PRIMARY);
+                    doc.text(kpi[1], x + 4, boxY + 16);
+                });
+
+                y += Math.ceil(kpis.length / 3) * (boxHeight + 5) + 8;
+
+                doc.setFontSize(10);
+                doc.setTextColor(40, 40, 40);
+                const completude = ((1 - stats.nulls / (stats.rows * stats.columns)) * 100).toFixed(1);
+                doc.text(`Dataset carregado: ${state.fileName}`, margin, y);
+                y += 6;
+                doc.text(`Tamanho: ${stats.rows.toLocaleString('pt-BR')} linhas × ${stats.columns} colunas`, margin, y);
+                y += 6;
+                doc.text(`Completude: ${completude}% dos valores preenchidos`, margin, y);
+                y += 10;
+            }
+
+            // ── ESTATÍSTICAS DESCRITIVAS ──────────────────────────────────
+            if (includeStats) {
+                doc.addPage();
+                y = 20;
+                doc.setFontSize(16);
+                doc.setTextColor(...PRIMARY);
+                doc.text('Estatísticas Descritivas', margin, y);
+                y += 4;
+
+                doc.setFontSize(11);
+                doc.setTextColor(40, 40, 40);
+                doc.text('Colunas Numéricas', margin, y + 6);
+
+                const analyticsRows = Object.entries(analytics).map(([col, s]) => [col, s.mean, s.median, s.std, s.min, s.max]);
+                doc.autoTable({
+                    startY: y + 10,
+                    head: [['Coluna', 'Média', 'Mediana', 'Desvio', 'Min', 'Max']],
+                    body: analyticsRows.length ? analyticsRows : [['—', '—', '—', '—', '—', '—']],
+                    styles: { fontSize: 8 },
+                    headStyles: { fillColor: PRIMARY, textColor: 255 },
+                    alternateRowStyles: { fillColor: LIGHT },
+                    margin: { left: margin, right: margin }
+                });
+
+                let afterY = doc.lastAutoTable.finalY + 10;
+                doc.setFontSize(11);
+                doc.setTextColor(40, 40, 40);
+                doc.text('Qualidade dos Dados', margin, afterY);
+
+                const qualityRows = state.columns.map(col => {
+                    const values = state.data.map(r => r[col]);
+                    const nullCount = values.filter(v => v == null || v === '').length;
+                    const unique = new Set(values.filter(v => v != null)).size;
+                    const type = state.columnTypes[col] || 'desconhecido';
+                    return [col, type, String(nullCount), `${(nullCount / state.data.length * 100).toFixed(1)}%`, String(unique)];
+                });
+
+                doc.autoTable({
+                    startY: afterY + 4,
+                    head: [['Coluna', 'Tipo', 'Nulos', '% Nulos', 'Únicos']],
+                    body: qualityRows,
+                    styles: { fontSize: 8 },
+                    headStyles: { fillColor: PRIMARY, textColor: 255 },
+                    alternateRowStyles: { fillColor: LIGHT },
+                    margin: { left: margin, right: margin }
+                });
+            }
+
+            // ── INSIGHTS AUTOMÁTICOS ──────────────────────────────────────
+            if (includeInsights) {
+                doc.addPage();
+                y = 20;
+                doc.setFontSize(16);
+                doc.setTextColor(...PRIMARY);
+                doc.text('Insights Automáticos', margin, y);
+                y += 8;
+
+                doc.setFontSize(10);
+                doc.setTextColor(40, 40, 40);
+                doc.text('Análise automática dos dados detectou os seguintes pontos importantes:', margin, y);
+                y += 8;
+
+                insights.forEach(insight => {
+                    const color = SEVERITY_COLORS[insight.severity] || GRAY;
+                    const lines = doc.splitTextToSize(insight.message, pageWidth - margin * 2 - 6);
+                    const boxHeight = 8 + lines.length * 5;
+
+                    if (y + boxHeight > 280) {
+                        doc.addPage();
+                        y = 20;
+                    }
+
+                    doc.setFillColor(250, 250, 250);
+                    doc.setDrawColor(...color);
+                    doc.setLineWidth(1);
+                    doc.line(margin, y, margin, y + boxHeight);
+                    doc.rect(margin, y, pageWidth - margin * 2, boxHeight, 'F');
+                    doc.setLineWidth(1.2);
+                    doc.line(margin, y, margin, y + boxHeight);
+
+                    doc.setFontSize(9);
+                    doc.setTextColor(...color);
+                    doc.text(insight.category, margin + 4, y + 6);
+
+                    doc.setFontSize(9);
+                    doc.setTextColor(40, 40, 40);
+                    doc.text(lines, margin + 4, y + 12);
+
+                    y += boxHeight + 4;
+                });
+            }
+
+            // ── AMOSTRA DOS DADOS ──────────────────────────────────────────
+            if (includeGraphs) {
+                doc.addPage();
+                y = 20;
+                doc.setFontSize(16);
+                doc.setTextColor(...PRIMARY);
+                doc.text('Amostra dos Dados', margin, y);
+                y += 4;
+
+                doc.setFontSize(10);
+                doc.setTextColor(40, 40, 40);
+                doc.text('Primeiras 10 linhas do dataset:', margin, y + 6);
+
+                doc.autoTable({
+                    startY: y + 10,
+                    head: [state.columns],
+                    body: state.data.slice(0, 10).map(row => state.columns.map(c => row[c] != null && row[c] !== '' ? String(row[c]) : '-')),
+                    styles: { fontSize: 7 },
+                    headStyles: { fillColor: PRIMARY, textColor: 255 },
+                    alternateRowStyles: { fillColor: LIGHT },
+                    margin: { left: margin, right: margin }
+                });
+            }
+
+            // ── CONCLUSÃO ──────────────────────────────────────────────────
+            doc.addPage();
+            y = 20;
+            doc.setFontSize(16);
+            doc.setTextColor(...PRIMARY);
+            doc.text('Conclusão', margin, y);
+            y += 10;
+
+            doc.setFontSize(11);
+            doc.setTextColor(40, 40, 40);
+            doc.text('Resumo da Análise', margin, y);
+            y += 7;
+            doc.setFontSize(10);
+            const resumoLines = doc.splitTextToSize(
+                `Este relatório apresenta uma análise completa do dataset ${state.fileName} contendo ${stats.rows.toLocaleString('pt-BR')} registros e ${stats.columns} colunas.`,
+                pageWidth - margin * 2
+            );
+            doc.text(resumoLines, margin, y);
+            y += resumoLines.length * 5 + 6;
+
+            doc.setFontSize(11);
+            doc.text('Principais Achados', margin, y);
+            y += 7;
+            doc.setFontSize(10);
+            const achados = [
+                `Dataset com ${stats.numericCols} colunas numéricas e ${stats.categoricalCols} categóricas`,
+                `Completude dos dados: ${((1 - stats.nulls / (stats.rows * stats.columns)) * 100).toFixed(1)}%`,
+                `Duplicatas detectadas: ${stats.duplicates} linhas`,
+                `Valores nulos: ${stats.nulls.toLocaleString('pt-BR')} ocorrências`
+            ];
+            achados.forEach(line => {
+                const wrapped = doc.splitTextToSize(`•  ${line}`, pageWidth - margin * 2 - 4);
+                doc.text(wrapped, margin + 2, y);
+                y += wrapped.length * 5 + 1;
+            });
+            y += 5;
+
+            doc.setFontSize(11);
+            doc.text('Recomendações', margin, y);
+            y += 7;
+            doc.setFontSize(10);
+            const recomendacoes = [
+                'Investigar presença de valores nulos para possível tratamento',
+                'Validar dados duplicados e decidir por remoção ou consolidação',
+                'Executar análises exploratórias por coluna numérica',
+                'Identificar correlações entre variáveis'
+            ];
+            recomendacoes.forEach(line => {
+                const wrapped = doc.splitTextToSize(`•  ${line}`, pageWidth - margin * 2 - 4);
+                doc.text(wrapped, margin + 2, y);
+                y += wrapped.length * 5 + 1;
+            });
+
+            // ── RODAPÉ EM TODAS AS PÁGINAS ─────────────────────────────────
+            const pageCount = doc.internal.getNumberOfPages();
+            const pageHeight = doc.internal.pageSize.getHeight();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(8);
+                doc.setTextColor(150, 150, 150);
+                doc.text(
+                    `DataAnalyzer Pro v3.0  •  ${dateStr}  •  Página ${i} de ${pageCount}`,
+                    pageWidth / 2,
+                    pageHeight - 8,
+                    { align: 'center' }
+                );
+            }
+
+            doc.save(`${title.replace(/\s+/g, '_')}_${now.getTime()}.pdf`);
+
+            showLoading(false);
+            showNotification('✓ Relatório PDF gerado com sucesso!', 'success');
+        } catch (err) {
+            showLoading(false);
+            showNotification('Erro ao gerar relatório: ' + err.message, 'error');
+        }
+    }, 300);
+}
+
+
+function generateInsightsData() {
+    const insights = [];
+    
+    // Nulos
+    state.columns.forEach(col => {
+        const nullCount = state.data.filter(r => r[col] == null || r[col] === '').length;
+        if (nullCount > 0) {
+            const pct = (nullCount / state.data.length * 100).toFixed(1);
+            insights.push({
+                severity: pct >= 30 ? 'critical' : 'warning',
+                category: '⚠️ NULOS',
+                message: `"${col}" possui ${nullCount} nulos (${pct}%)`
+            });
+        }
+    });
+    
+    // Duplicatas
+    const duplicates = state.data.length - new Set(state.data.map(r => JSON.stringify(r))).size;
+    if (duplicates > 0) {
+        insights.push({
+            severity: 'warning',
+            category: '📌 DUPLICATAS',
+            message: `${duplicates} linhas duplicadas encontradas`
+        });
+    }
+    
+    if (insights.length === 0) {
+        insights.push({
+            severity: 'info',
+            category: 'ℹ️ DADOS',
+            message: '✓ Dados sem problemas críticos detectados'
+        });
+    }
+    
+    return insights;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPARAÇÃO
+// ═══════════════════════════════════════════════════════════════════════════
+
+function generateComparacao() {
+    const col = document.getElementById('compColumn').value;
+    const metric = document.getElementById('compMetric').value;
+    
+    if (!col) {
+        showNotification('Selecione coluna', 'warning');
+        return;
+    }
+    
+    showLoading(true);
+    const values = state.data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+    if (values.length === 0) {
+        showLoading(false);
+        showNotification('Sem valores numéricos na coluna selecionada', 'warning');
+        return;
+    }
+    values.sort((a, b) => a - b);
+
+    let result = 0;
+    if (metric === 'mean') result = values.reduce((a, b) => a + b, 0) / values.length;
+    else if (metric === 'median') {
+        if (values.length % 2 === 0) {
+            const mid = values.length / 2;
+            result = (values[mid - 1] + values[mid]) / 2;
+        } else {
+            result = values[Math.floor(values.length / 2)];
+        }
+    } else if (metric === 'std') {
+        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+        result = Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length);
+    } else if (metric === 'min') result = values[0];
+    else if (metric === 'max') result = values[values.length - 1];
+
+    showLoading(false);
+    const html = `
+        <div style="padding: 16px; background: #1a56db; color: white; border-radius: 8px; text-align: center;">
+            <h3>${metric.toUpperCase()} de ${col}</h3>
+            <h1 style="color: white;">${Number(result).toFixed(2)}</h1>
+        </div>
+    `;
+    document.getElementById('comparacaoContent').innerHTML = html;
 }
