@@ -1,477 +1,491 @@
 (function () {
+    if (window.__dataAnalyzerEnhancementsLoaded) return;
+    window.__dataAnalyzerEnhancementsLoaded = true;
+
     function parseNumber(value) {
         if (value === null || value === undefined || value === '') return NaN;
         if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+
         const text = String(value).trim();
         if (!text) return NaN;
+
         const normalized = text
-            .replace(/\s/g, '')
+            .replace(/\s+/g, '')
+            .replace(/\$/g, '')
+            .replace(/%/g, '')
             .replace(/\./g, '')
             .replace(',', '.')
-            .replace(/[%$€£¥]/g, '');
+            .replace(/[^0-9.+-]/g, '');
+
         const parsed = Number(normalized);
         return Number.isFinite(parsed) ? parsed : NaN;
     }
 
-    function formatCell(value) {
+    function formatValue(value) {
         if (value === null || value === undefined || value === '') return '-';
+        if (typeof value === 'number') {
+            if (Number.isInteger(value)) return value.toLocaleString('pt-BR');
+            return value.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+        }
         return String(value);
     }
 
-    function getNumericValues(col) {
-        return state.data
-            .map(row => parseNumber(row[col]))
-            .filter(value => Number.isFinite(value));
+    function getNumericValues(columnName) {
+        const values = [];
+        if (!window.state || !Array.isArray(window.state.data)) return values;
+        window.state.data.forEach((row) => {
+            const value = parseNumber(row[columnName]);
+            if (Number.isFinite(value)) values.push(value);
+        });
+        return values;
     }
 
-    function getPairedNumericValues(colX, colY) {
-        const x = [];
-        const y = [];
+    function getColumnSummary(columnName) {
+        const values = getNumericValues(columnName);
+        if (!values.length) {
+            return { count: 0, mean: 0, median: 0, std: 0, min: 0, max: 0 };
+        }
 
-        state.data.forEach(row => {
-            const left = parseNumber(row[colX]);
-            const right = parseNumber(row[colY]);
-            if (Number.isFinite(left) && Number.isFinite(right)) {
-                x.push(left);
-                y.push(right);
+        const sorted = [...values].sort((a, b) => a - b);
+        const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+        const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+        const std = Math.sqrt(variance);
+        const median = sorted.length % 2 === 0
+            ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+            : sorted[Math.floor(sorted.length / 2)];
+
+        return {
+            count: values.length,
+            mean,
+            median,
+            std,
+            min: sorted[0],
+            max: sorted[sorted.length - 1]
+        };
+    }
+
+    function buildSummaryStats() {
+        if (!window.state || !window.state.data.length) {
+            return {
+                rows: 0,
+                columns: 0,
+                nulls: 0,
+                duplicates: 0,
+                numericColumns: 0,
+                categoricalColumns: 0,
+                completeness: 100,
+                outliers: 0,
+                biggestColumn: null
+            };
+        }
+
+        const rows = window.state.data.length;
+        const columns = window.state.columns.length;
+        const totalCells = rows * columns;
+
+        let nulls = 0;
+        let duplicates = 0;
+        window.state.columns.forEach((column) => {
+            window.state.data.forEach((row) => {
+                if (row[column] === null || row[column] === undefined || row[column] === '') nulls++;
+            });
+        });
+
+        const uniqueRows = new Set(window.state.data.map((row) => JSON.stringify(row)));
+        duplicates = Math.max(0, rows - uniqueRows.size);
+
+        const numericColumns = window.state.numericColumns || [];
+        let biggestColumn = null;
+        let maxValues = -Infinity;
+
+        numericColumns.forEach((column) => {
+            const values = getNumericValues(column);
+            const range = values.length ? Math.max(...values) - Math.min(...values) : 0;
+            if (range > maxValues) {
+                maxValues = range;
+                biggestColumn = column;
             }
         });
 
-        return { x, y };
-    }
+        const completeness = totalCells > 0 ? ((totalCells - nulls) / totalCells) * 100 : 100;
+        let outliers = 0;
 
-    function safeCsvValue(value) {
-        const text = value === null || value === undefined ? '' : String(value);
-        if (/[",\n]/.test(text)) {
-            return `"${text.replace(/"/g, '""')}"`;
-        }
-        return text;
-    }
-
-    window.updateChartOptions = function () {
-        const type = document.getElementById('chartType').value;
-        const second = document.getElementById('chartColumn2');
-        if (!second) return;
-        const shouldShow = ['scatter', 'linha', 'bubble'].includes(type);
-        second.style.display = shouldShow ? 'block' : 'none';
-        if (!shouldShow) second.value = '';
-    };
-
-    window.generateChart = function () {
-        const type = document.getElementById('chartType').value;
-        const col = document.getElementById('chartColumn').value;
-        const col2 = document.getElementById('chartColumn2').value;
-
-        if (!type || !col) {
-            showNotification('Selecione tipo e coluna', 'warning');
-            return;
-        }
-
-        if ((type === 'scatter' || type === 'bubble') && !col2) {
-            showNotification('Selecione a segunda coluna para este gráfico', 'warning');
-            return;
-        }
-
-        showLoading(true);
-        setTimeout(() => {
-            const container = document.getElementById('chartContainer');
-            container.innerHTML = '';
-
-            if (type === 'histograma') {
-                renderHistogram(col, container);
-            } else if (type === 'boxplot') {
-                renderBoxplot(col, container);
-            } else if (type === 'barras') {
-                renderBarChart(col, container);
-            } else if (type === 'pizza') {
-                renderPieChart(col, container);
-            } else if (type === 'linha') {
-                const values = getNumericValues(col);
-                Plotly.newPlot(container, [{
-                    y: values,
-                    type: 'scatter',
-                    mode: 'lines',
-                    marker: { color: '#1a56db' }
-                }], {
-                    title: `Série Temporal — ${col}`,
-                    xaxis: { title: 'Índice' },
-                    yaxis: { title: col }
-                }, { responsive: true });
-            } else if (type === 'scatter') {
-                const { x, y } = getPairedNumericValues(col, col2);
-                Plotly.newPlot(container, [{
-                    x,
-                    y,
-                    type: 'scatter',
-                    mode: 'markers',
-                    marker: { size: 8, color: '#1a56db', opacity: 0.6 }
-                }], {
-                    title: `Dispersão — ${col} × ${col2}`,
-                    xaxis: { title: col },
-                    yaxis: { title: col2 }
-                }, { responsive: true });
-            } else if (type === 'bubble') {
-                const { x, y } = getPairedNumericValues(col, col2);
-                const z = x.map((_, index) => Math.abs(y[index]) || 1);
-                Plotly.newPlot(container, [{
-                    x,
-                    y,
-                    z,
-                    type: 'scatter',
-                    mode: 'markers',
-                    marker: { size: z.map(value => Math.max(8, value * 2)), opacity: 0.7, color: '#7c3aed' }
-                }], {
-                    title: `Bubble — ${col} × ${col2}`,
-                    xaxis: { title: col },
-                    yaxis: { title: col2 }
-                }, { responsive: true });
+        numericColumns.forEach((column) => {
+            const summary = getColumnSummary(column);
+            if (summary.count > 0) {
+                const threshold = summary.std * 3;
+                window.state.data.forEach((row) => {
+                    const value = parseNumber(row[column]);
+                    if (Number.isFinite(value) && Math.abs(value - summary.mean) > threshold) outliers++;
+                });
             }
+        });
 
-            showLoading(false);
-            showNotification('Gráfico gerado', 'success');
-        }, 300);
-    };
+        return {
+            rows,
+            columns,
+            nulls,
+            duplicates,
+            numericColumns: numericColumns.length,
+            categoricalColumns: window.state.categoricalColumns ? window.state.categoricalColumns.length : 0,
+            completeness,
+            outliers,
+            biggestColumn
+        };
+    }
 
-    window.renderTable = function () {
-        const rowsPerPageEl = document.getElementById('rowsPerPage');
-        const rowsPerPage = rowsPerPageEl ? parseInt(rowsPerPageEl.value, 10) || state.currentTable.rowsPerPage : state.currentTable.rowsPerPage;
-        const start = (state.currentTable.page - 1) * rowsPerPage;
-        const end = start + rowsPerPage;
-        const pageData = (state.currentTable.filteredData || []).slice(start, end);
+    function getCorrelationMatrix() {
+        const numericColumns = window.state.numericColumns || [];
+        const matrix = {};
 
-        let html = '<table><thead><tr>';
-        state.columns.forEach(col => html += `<th>${col}</th>`);
-        html += '</tr></thead><tbody>';
+        numericColumns.forEach((colA) => {
+            matrix[colA] = {};
+            const valuesA = getNumericValues(colA);
+            numericColumns.forEach((colB) => {
+                const valuesB = getNumericValues(colB);
+                if (!valuesA.length || !valuesB.length || valuesA.length !== valuesB.length) {
+                    matrix[colA][colB] = 0;
+                    return;
+                }
 
-        if (pageData.length === 0) {
-            html += `<tr><td colspan="${state.columns.length}" style="text-align:center;padding:12px">Nenhum registro</td></tr>`;
-        } else {
-            pageData.forEach(row => {
-                html += '<tr>';
-                state.columns.forEach(col => html += `<td>${formatCell(row[col])}</td>`);
-                html += '</tr>';
+                const meanA = valuesA.reduce((sum, v) => sum + v, 0) / valuesA.length;
+                const meanB = valuesB.reduce((sum, v) => sum + v, 0) / valuesB.length;
+                let numerator = 0;
+                let sumA = 0;
+                let sumB = 0;
+
+                valuesA.forEach((valueA, index) => {
+                    const diffA = valueA - meanA;
+                    const diffB = valuesB[index] - meanB;
+                    numerator += diffA * diffB;
+                    sumA += diffA ** 2;
+                    sumB += diffB ** 2;
+                });
+
+                const denominator = Math.sqrt(sumA * sumB) || 1;
+                matrix[colA][colB] = denominator ? numerator / denominator : 0;
             });
+        });
+
+        return matrix;
+    }
+
+    function ensureSummaryContainer() {
+        let panel = document.getElementById('datasetSummary');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'datasetSummary';
+            panel.className = 'card';
+            const insertedTarget = document.querySelector('#dashboard .card, #dashboardContent');
+            if (insertedTarget && insertedTarget.parentNode) {
+                insertedTarget.parentNode.insertBefore(panel, insertedTarget.nextSibling);
+            } else {
+                const main = document.querySelector('.pages-container');
+                if (main) main.appendChild(panel);
+            }
+        }
+        return panel;
+    }
+
+    function renderDatasetSummary() {
+        const panel = ensureSummaryContainer();
+        if (!window.state || !window.state.data.length) {
+            panel.innerHTML = '<h3>📌 Resumo do Dataset</h3><p>Carregue um arquivo para visualizar estatísticas.</p>';
+            return;
         }
 
-        html += '</tbody></table>';
-        document.getElementById('tableContainer').innerHTML = html;
+        const summary = buildSummaryStats();
+        const correlation = getCorrelationMatrix();
+        const topCorrelations = [];
 
-        const totalPages = Math.max(1, Math.ceil(((state.currentTable.filteredData || []).length) / rowsPerPage));
-        const paginationEl = document.getElementById('pagination');
-        paginationEl.innerHTML = '';
-        for (let i = 1; i <= totalPages; i++) {
-            const btn = document.createElement('button');
-            if (i === state.currentTable.page) btn.classList.add('active');
-            btn.textContent = i;
-            btn.addEventListener('click', () => {
-                state.currentTable.page = i;
-                window.renderTable();
+        Object.keys(correlation).forEach((colA) => {
+            Object.keys(correlation[colA]).forEach((colB) => {
+                const value = correlation[colA][colB];
+                if (colA !== colB && Math.abs(value) > 0.5) {
+                    topCorrelations.push({ colA, colB, value });
+                }
             });
-            paginationEl.appendChild(btn);
-        }
-    };
+        });
 
-    window.exportCSV = function () {
-        if (!state.data.length) {
-            showNotification('Carregue um arquivo antes de exportar', 'warning');
-            return;
-        }
-
-        const header = state.columns.map(safeCsvValue).join(',');
-        const rows = state.data.map(row => state.columns.map(col => safeCsvValue(row[col])).join(','));
-        const csv = [header, ...rows].join('\n');
-        downloadFile(csv, 'data.csv', 'text/csv;charset=utf-8;');
-        showNotification('CSV exportado', 'success');
-    };
-
-    window.generateComparacao = function () {
-        const col = document.getElementById('compColumn').value;
-        const metric = document.getElementById('compMetric').value;
-
-        if (!col) {
-            showNotification('Selecione coluna', 'warning');
-            return;
-        }
-
-        const values = getNumericValues(col);
-        if (values.length === 0) {
-            showNotification('Sem valores numéricos na coluna selecionada', 'warning');
-            return;
-        }
-
-        values.sort((a, b) => a - b);
-        const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-
-        let result = 0;
-        if (metric === 'mean') {
-            result = mean;
-        } else if (metric === 'median') {
-            const mid = Math.floor(values.length / 2);
-            result = values.length % 2 === 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid];
-        } else if (metric === 'std') {
-            result = Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
-        } else if (metric === 'min') {
-            result = values[0];
-        } else if (metric === 'max') {
-            result = values[values.length - 1];
-        }
+        topCorrelations.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+        const top = topCorrelations.slice(0, 3);
 
         const html = `
-            <div style="padding: 16px; background: #1a56db; color: white; border-radius: 8px; text-align: center;">
-                <h3>${metric.toUpperCase()} de ${col}</h3>
-                <h1 style="color: white;">${Number(result).toFixed(2)}</h1>
+            <h3>📌 Resumo do Dataset</h3>
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-label">Linhas</div>
+                    <div class="kpi-value">${summary.rows.toLocaleString('pt-BR')}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Colunas</div>
+                    <div class="kpi-value">${summary.columns}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Completude</div>
+                    <div class="kpi-value">${summary.completeness.toFixed(1)}%</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Outliers</div>
+                    <div class="kpi-value">${summary.outliers}</div>
+                </div>
+            </div>
+            <div class="summary-info">
+                <p><strong>Coluna dominante:</strong> ${summary.biggestColumn || 'N/A'}</p>
+                <p><strong>Duplicatas:</strong> ${summary.duplicates}</p>
+                <p><strong>Nulos:</strong> ${summary.nulls}</p>
+                <p><strong>Correlação forte:</strong> ${top.length ? top.map(item => `${item.colA} ↔ ${item.colB} (${item.value.toFixed(2)})`).join(' | ') : 'Nenhuma detectada'}</p>
             </div>
         `;
 
-        document.getElementById('comparacaoContent').innerHTML = html;
-    };
+        panel.innerHTML = html;
+    }
 
-    window.generateReport = function () {
-        if (state.data.length === 0) {
-            showNotification('Carregue um arquivo', 'warning');
+    function generateForecast(columnName, periods = 6) {
+        const values = getNumericValues(columnName);
+        if (values.length < 2) {
+            return { values: [], forecast: [] };
+        }
+
+        const n = values.length;
+        const x = Array.from({ length: n }, (_, index) => index + 1);
+        const sumX = x.reduce((sum, value) => sum + value, 0);
+        const sumY = values.reduce((sum, value) => sum + value, 0);
+        const sumXY = x.reduce((sum, value, index) => sum + value * values[index], 0);
+        const sumXX = x.reduce((sum, value) => sum + value * value, 0);
+
+        const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX || 1);
+        const intercept = (sumY - slope * sumX) / n;
+
+        const forecast = [];
+        let lastValue = values[values.length - 1];
+        for (let step = 1; step <= periods; step++) {
+            const projected = intercept + slope * (n + step);
+            forecast.push({ step, value: projected });
+            lastValue = projected;
+        }
+
+        return { values, forecast };
+    }
+
+    function renderForecastPanel() {
+        const target = document.getElementById('forecastPanel');
+        if (!target) return;
+
+        if (!window.state || !window.state.data.length || !window.state.numericColumns.length) {
+            target.innerHTML = '<p>Não há dados numéricos para prever.</p>';
             return;
         }
 
-        const title = document.getElementById('relatorioTitle').value || 'Relatório Executivo';
-        const includeSummary = document.getElementById('relSummary').checked;
-        const includeStats = document.getElementById('relStats').checked;
-        const includeGraphs = document.getElementById('relGraphs').checked;
-        const includeInsights = document.getElementById('relInsights').checked;
-        const includeForecast = document.getElementById('relForecast')?.checked ?? false;
+        const column = window.state.numericColumns[0];
+        const forecast = generateForecast(column, 6);
+        const rows = forecast.forecast.map((item) => `<tr><td>+${item.step}</td><td>${Number(item.value).toFixed(2)}</td></tr>`).join('');
+        target.innerHTML = `
+            <h3>📈 Previsão de Tendência</h3>
+            <p><strong>Coluna base:</strong> ${column}</p>
+            <table>
+              <thead><tr><th>Período</th><th>Valor previsto</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="2">Sem previsão</td></tr>'}</tbody>
+            </table>
+        `;
+    }
 
-        showLoading(true);
+    function enhanceApp() {
+        if (!window.state) return;
 
-        setTimeout(() => {
-            try {
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-                const pageWidth = doc.internal.pageSize.getWidth();
-                const margin = 14;
-                const now = new Date();
-                const dateStr = now.toLocaleString('pt-BR');
-                const stats = calculateStatistics();
-                const analytics = calculateAnalytics();
-                const insights = generateInsightsData();
+        const oldOnDataLoaded = window.onDataLoaded;
+        if (oldOnDataLoaded) {
+            window.onDataLoaded = function (rows) {
+                const result = oldOnDataLoaded(rows);
+                renderDatasetSummary();
+                renderForecastPanel();
+                return result;
+            };
+        }
 
-                const PRIM = [26, 86, 219];
-                const GRAY = [102, 102, 102];
-                const LIGHT = [249, 250, 251];
+        const oldClearData = window.clearData;
+        if (oldClearData) {
+            window.clearData = function () {
+                const result = oldClearData();
+                const panel = ensureSummaryContainer();
+                panel.innerHTML = '<h3>📌 Resumo do Dataset</h3><p>Carregue um arquivo para visualizar estatísticas.</p>';
+                const forecast = document.getElementById('forecastPanel');
+                if (forecast) forecast.innerHTML = '<p>Sem previsão disponível.</p>';
+                return result;
+            };
+        }
 
-                doc.setFontSize(26);
-                doc.setTextColor(...PRIM);
-                doc.text(title, margin, 30);
-                doc.setFontSize(11);
-                doc.setTextColor(...GRAY);
-                doc.text('Relatório Executivo', margin, 39);
-                doc.text(`Data: ${dateStr}`, margin, 46);
-                doc.text('Ferramenta: DataAnalyzer Pro v3.0', margin, 52);
-                doc.setDrawColor(...PRIM);
-                doc.setLineWidth(0.8);
-                doc.line(margin, 57, pageWidth - margin, 57);
-
-                let y = 68;
-
-                if (includeSummary) {
-                    doc.setFontSize(16);
-                    doc.setTextColor(...PRIM);
-                    doc.text('Resumo Executivo', margin, y);
-                    y += 8;
-
-                    const kpis = [
-                        ['Registros', stats.rows.toLocaleString('pt-BR')],
-                        ['Colunas', String(stats.columns)],
-                        ['Nulos', stats.nulls.toLocaleString('pt-BR')],
-                        ['Duplicados', String(stats.duplicates)],
-                        ['Numéricas', String(stats.numericCols)],
-                        ['Categóricas', String(stats.categoricalCols)]
-                    ];
-
-                    const boxWidth = (pageWidth - margin * 2 - 10) / 3;
-                    const boxHeight = 20;
-                    kpis.forEach((kpi, i) => {
-                        const col = i % 3;
-                        const row = Math.floor(i / 3);
-                        const x = margin + col * (boxWidth + 5);
-                        const boxY = y + row * (boxHeight + 5);
-
-                        doc.setFillColor(...LIGHT);
-                        doc.setDrawColor(...PRIM);
-                        doc.roundedRect(x, boxY, boxWidth, boxHeight, 2, 2, 'FD');
-
-                        doc.setFontSize(8);
-                        doc.setTextColor(...GRAY);
-                        doc.text(kpi[0], x + 4, boxY + 7);
-
-                        doc.setFontSize(15);
-                        doc.setTextColor(...PRIM);
-                        doc.text(kpi[1], x + 4, boxY + 16);
-                    });
-
-                    y += Math.ceil(kpis.length / 3) * (boxHeight + 5) + 8;
-                    doc.setFontSize(10);
-                    doc.setTextColor(40, 40, 40);
-                    const completude = ((1 - stats.nulls / (stats.rows * stats.columns)) * 100).toFixed(1);
-                    doc.text(`Dataset carregado: ${state.fileName}`, margin, y);
-                    y += 6;
-                    doc.text(`Tamanho: ${stats.rows.toLocaleString('pt-BR')} linhas × ${stats.columns} colunas`, margin, y);
-                    y += 6;
-                    doc.text(`Completude: ${completude}% dos valores preenchidos`, margin, y);
-                    y += 10;
+        const oldGenerateInsights = window.generateInsights;
+        if (oldGenerateInsights) {
+            window.generateInsights = function () {
+                const insights = [];
+                if (!window.state || !window.state.data.length) {
+                    showNotification('Carregue um arquivo', 'warning');
+                    return;
                 }
 
-                if (includeStats) {
-                    doc.addPage();
-                    y = 20;
-                    doc.setFontSize(16);
-                    doc.setTextColor(...PRIM);
-                    doc.text('Estatísticas Descritivas', margin, y);
-                    y += 4;
-
-                    const analyticsRows = Object.entries(analytics).map(([col, s]) => [col, s.mean, s.median, s.std, s.min, s.max]);
-                    doc.autoTable({
-                        startY: y + 10,
-                        head: [['Coluna', 'Média', 'Mediana', 'Desvio', 'Min', 'Max']],
-                        body: analyticsRows.length ? analyticsRows : [['—', '—', '—', '—', '—', '—']],
-                        styles: { fontSize: 8 },
-                        headStyles: { fillColor: PRIM, textColor: 255 },
-                        alternateRowStyles: { fillColor: LIGHT },
-                        margin: { left: margin, right: margin }
-                    });
+                const summary = buildSummaryStats();
+                if (summary.nulls > 0) {
+                    insights.push({ severity: summary.nulls > 0.3 * summary.rows * summary.columns ? 'critical' : 'warning', category: 'NULOS', message: `Há ${summary.nulls} valores vazios no conjunto.` });
                 }
 
-                if (includeInsights) {
-                    doc.addPage();
-                    y = 20;
-                    doc.setFontSize(16);
-                    doc.setTextColor(...PRIM);
-                    doc.text('Insights Automáticos', margin, y);
-                    y += 8;
+                if (summary.duplicates > 0) {
+                    insights.push({ severity: 'warning', category: 'DUPLICATAS', message: `${summary.duplicates} linhas duplicadas foram encontradas.` });
+                }
 
-                    insights.forEach((insight) => {
-                        const color = insight.severity === 'critical' ? [220, 38, 38] : insight.severity === 'warning' ? [217, 119, 6] : [2, 132, 199];
-                        const lines = doc.splitTextToSize(insight.message, pageWidth - margin * 2 - 6);
-                        const boxHeight = 8 + lines.length * 5;
-
-                        if (y + boxHeight > 280) {
-                            doc.addPage();
-                            y = 20;
+                if (window.state.numericColumns.length) {
+                    window.state.numericColumns.forEach((column) => {
+                        const stats = getColumnSummary(column);
+                        if (stats.count > 2) {
+                            const threshold = stats.std * 3;
+                            const anomalies = window.state.data.filter((row) => {
+                                const value = parseNumber(row[column]);
+                                return Number.isFinite(value) && Math.abs(value - stats.mean) > threshold;
+                            }).length;
+                            if (anomalies > 0) {
+                                insights.push({ severity: 'info', category: 'ANOMALIAS', message: `${anomalies} valores fora do padrão em "${column}".` });
+                            }
                         }
-
-                        doc.setFillColor(250, 250, 250);
-                        doc.setDrawColor(...color);
-                        doc.rect(margin, y, pageWidth - margin * 2, boxHeight, 'F');
-                        doc.setFontSize(9);
-                        doc.setTextColor(...color);
-                        doc.text(insight.category, margin + 4, y + 6);
-                        doc.setFontSize(9);
-                        doc.setTextColor(40, 40, 40);
-                        doc.text(lines, margin + 4, y + 12);
-                        y += boxHeight + 4;
                     });
                 }
 
-                if (includeGraphs) {
-                    doc.addPage();
-                    y = 20;
-                    doc.setFontSize(16);
-                    doc.setTextColor(...PRIM);
-                    doc.text('Amostra dos Dados', margin, y);
-                    y += 4;
-                    doc.autoTable({
-                        startY: y + 10,
-                        head: [state.columns],
-                        body: state.data.slice(0, 10).map(row => state.columns.map(c => row[c] != null && row[c] !== '' ? String(row[c]) : '-')),
-                        styles: { fontSize: 7 },
-                        headStyles: { fillColor: PRIM, textColor: 255 },
-                        alternateRowStyles: { fillColor: LIGHT },
-                        margin: { left: margin, right: margin }
+                const matrix = getCorrelationMatrix();
+                let strongest = null;
+                Object.keys(matrix).forEach((colA) => {
+                    Object.keys(matrix[colA]).forEach((colB) => {
+                        if (colA !== colB) {
+                            const value = Math.abs(matrix[colA][colB]);
+                            if (!strongest || value > strongest.value) {
+                                strongest = { colA, colB, value };
+                            }
+                        }
                     });
-                }
-
-                if (includeForecast) {
-                    doc.addPage();
-                    y = 20;
-                    doc.setFontSize(16);
-                    doc.setTextColor(...PRIM);
-                    doc.text('Previsão e Tendência', margin, y);
-                    y += 8;
-                    doc.setFontSize(10);
-                    doc.setTextColor(40, 40, 40);
-                    const firstNumeric = state.numericColumns[0];
-                    if (firstNumeric) {
-                        const values = getNumericValues(firstNumeric);
-                        const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
-                        const trend = values.length > 1 ? values[values.length - 1] - values[0] : 0;
-                        const lines = [
-                            `Coluna principal para tendência: ${firstNumeric}`,
-                            `Média observada: ${avg.toFixed(2)}`,
-                            `Variação total: ${trend.toFixed(2)}`,
-                            'Conclusão: a tendência geral pode sugerir aceleração ou redução conforme a série observada.'
-                        ];
-                        lines.forEach((line) => {
-                            doc.text(doc.splitTextToSize(line, pageWidth - margin * 2), margin, y);
-                            y += 8;
-                        });
-                    } else {
-                        doc.text('Nenhuma coluna numérica disponível para análise de tendência.', margin, y);
-                    }
-                }
-
-                doc.addPage();
-                y = 20;
-                doc.setFontSize(16);
-                doc.setTextColor(...PRIM);
-                doc.text('Conclusão', margin, y);
-                y += 10;
-                doc.setFontSize(11);
-                doc.setTextColor(40, 40, 40);
-                doc.text('Resumo da Análise', margin, y);
-                y += 7;
-                doc.setFontSize(10);
-                const resumoLines = doc.splitTextToSize(
-                    `Este relatório apresenta uma análise completa do dataset ${state.fileName} contendo ${stats.rows.toLocaleString('pt-BR')} registros e ${stats.columns} colunas.`,
-                    pageWidth - margin * 2
-                );
-                doc.text(resumoLines, margin, y);
-                y += resumoLines.length * 5 + 6;
-
-                doc.setFontSize(11);
-                doc.text('Principais Achados', margin, y);
-                y += 7;
-                doc.setFontSize(10);
-                const achados = [
-                    `Dataset com ${stats.numericCols} colunas numéricas e ${stats.categoricalCols} categóricas`,
-                    `Completude dos dados: ${((1 - stats.nulls / (stats.rows * stats.columns)) * 100).toFixed(1)}%`,
-                    `Duplicatas detectadas: ${stats.duplicates} linhas`,
-                    `Valores nulos: ${stats.nulls.toLocaleString('pt-BR')} ocorrências`
-                ];
-                achados.forEach((line) => {
-                    const wrapped = doc.splitTextToSize(`•  ${line}`, pageWidth - margin * 2 - 4);
-                    doc.text(wrapped, margin + 2, y);
-                    y += wrapped.length * 5 + 1;
                 });
 
-                const pageCount = doc.internal.getNumberOfPages();
-                const pageHeight = doc.internal.pageSize.getHeight();
-                for (let i = 1; i <= pageCount; i++) {
-                    doc.setPage(i);
-                    doc.setFontSize(8);
-                    doc.setTextColor(150, 150, 150);
-                    doc.text(
-                        `DataAnalyzer Pro v3.0  •  ${dateStr}  •  Página ${i} de ${pageCount}`,
-                        pageWidth / 2,
-                        pageHeight - 8,
-                        { align: 'center' }
-                    );
+                if (strongest && strongest.value > 0.75) {
+                    insights.push({ severity: 'info', category: 'CORRELAÇÃO', message: `Alta correlação entre ${strongest.colA} e ${strongest.colB} (${strongest.value.toFixed(2)}).` });
                 }
 
-                doc.save(`${title.replace(/\s+/g, '_')}_${now.getTime()}.pdf`);
-                showLoading(false);
-                showNotification('✓ Relatório PDF gerado com sucesso!', 'success');
-            } catch (err) {
-                showLoading(false);
-                showNotification('Erro ao gerar relatório: ' + err.message, 'error');
+                if (!insights.length) {
+                    insights.push({ severity: 'info', category: 'ESTADO', message: 'Dados consistentes e sem anomalias detectadas.' });
+                }
+
+                const html = insights.map((item) => `
+                    <div class="insight-item ${item.severity}">
+                        <div class="insight-icon">${item.severity === 'critical' ? '🔴' : item.severity === 'warning' ? '⚠️' : 'ℹ️'}</div>
+                        <div class="insight-content">
+                            <h4>${item.category}</h4>
+                            <p>${item.message}</p>
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('insightsContent').innerHTML = html || '<p>Nenhum insight detectado</p>';
+                showNotification('Insights atualizados', 'success');
+            };
+        }
+
+        const oldRenderKPIs = window.renderKPIs;
+        if (oldRenderKPIs) {
+            window.renderKPIs = function () {
+                const stats = buildSummaryStats();
+                const kpiHtml = `
+                    <div class="kpi-card"><div class="kpi-label">📊 Registros</div><div class="kpi-value">${stats.rows.toLocaleString('pt-BR')}</div></div>
+                    <div class="kpi-card"><div class="kpi-label">📋 Colunas</div><div class="kpi-value">${stats.columns}</div></div>
+                    <div class="kpi-card"><div class="kpi-label">⚠️ Nulos</div><div class="kpi-value">${stats.nulls.toLocaleString('pt-BR')}</div></div>
+                    <div class="kpi-card"><div class="kpi-label">📌 Duplicados</div><div class="kpi-value">${stats.duplicates}</div></div>
+                    <div class="kpi-card"><div class="kpi-label">🔢 Numéricas</div><div class="kpi-value">${stats.numericColumns}</div></div>
+                    <div class="kpi-card"><div class="kpi-label">💯 Completude</div><div class="kpi-value">${stats.completeness.toFixed(1)}%</div></div>
+                `;
+                document.getElementById('kpiGrid').innerHTML = kpiHtml;
+            };
+        }
+
+        const oldExportCSV = window.exportCSV;
+        if (oldExportCSV) {
+            window.exportCSV = function () {
+                if (!window.state || !window.state.data.length) {
+                    showNotification('Carregue um arquivo antes de exportar', 'warning');
+                    return;
+                }
+                const csv = [
+                    window.state.columns.map((column) => `"${String(column).replace(/"/g, '""')}"`).join(','),
+                    ...window.state.data.map((row) => window.state.columns.map((column) => {
+                        const value = row[column];
+                        const stringValue = value === null || value === undefined ? '' : String(value).replace(/"/g, '""');
+                        return `"${stringValue}"`;
+                    }).join(','))
+                ].join('\n');
+                downloadFile(csv, 'dados_exportados.csv', 'text/csv;charset=utf-8;');
+                showNotification('CSV exportado', 'success');
+            };
+        }
+
+        const oldGenerateComparacao = window.generateComparacao;
+        if (oldGenerateComparacao) {
+            window.generateComparacao = function () {
+                const col = document.getElementById('compColumn').value;
+                const metric = document.getElementById('compMetric').value;
+                if (!col) {
+                    showNotification('Selecione coluna', 'warning');
+                    return;
+                }
+
+                const values = getNumericValues(col);
+                if (!values.length) {
+                    showNotification('Sem valores numéricos na coluna selecionada', 'warning');
+                    return;
+                }
+
+                const stats = getColumnSummary(col);
+                let result = 0;
+                if (metric === 'mean') result = stats.mean;
+                else if (metric === 'median') result = stats.median;
+                else if (metric === 'std') result = stats.std;
+                else if (metric === 'min') result = stats.min;
+                else if (metric === 'max') result = stats.max;
+
+                const html = `
+                    <div style="padding: 16px; background: #1a56db; color: white; border-radius: 8px; text-align: center;">
+                        <h3>${metric.toUpperCase()} de ${col}</h3>
+                        <h1 style="color: white;">${Number(result).toFixed(2)}</h1>
+                    </div>
+                `;
+                document.getElementById('comparacaoContent').innerHTML = html;
+            };
+        }
+
+        const panel = document.getElementById('forecastPanel');
+        if (!panel) {
+            const forecastCard = document.createElement('div');
+            forecastCard.id = 'forecastPanel';
+            forecastCard.className = 'card';
+            const target = document.getElementById('dashboardContent');
+            if (target) {
+                target.appendChild(forecastCard);
             }
-        }, 300);
-    };
+        }
+
+        renderDatasetSummary();
+        renderForecastPanel();
+    }
+
+    window.generateForecast = generateForecast;
+    window.getDatasetSummary = buildSummaryStats;
+    window.getCorrelationMatrix = getCorrelationMatrix;
+    window.renderDatasetSummary = renderDatasetSummary;
+    window.renderForecastPanel = renderForecastPanel;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        enhanceApp();
+        const observer = new MutationObserver(() => {
+            if (window.state && window.state.data && window.state.data.length) {
+                renderDatasetSummary();
+                renderForecastPanel();
+            }
+        });
+
+        const target = document.querySelector('.pages-container');
+        if (target) observer.observe(target, { childList: true, subtree: true });
+    });
 })();
